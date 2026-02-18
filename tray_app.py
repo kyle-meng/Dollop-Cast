@@ -170,13 +170,20 @@ def extract_video_url(web_url):
     if any(web_url.endswith(ext) for ext in ['.m3u8', '.mp4', '.mkv', '.ts']):
         return web_url
     try:
-        ydl_opts = {'format': 'best', 'quiet': True, 'no_warnings': True}
+        # 优化 yt-dlp 配置：优先 MP4，避免 DASH (除非电视支持)
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best', 
+            'quiet': True, 
+            'no_warnings': True,
+            # 某些网站需要模拟浏览器 User-Agent
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(web_url, download=False)
             if 'url' in info: return info['url']
             elif 'formats' in info: return info['formats'][-1]['url']
-    except:
-        pass
+    except Exception as e:
+        print(f"解析错误: {e}")
     return None
 
 @app.route('/cast', methods=['POST'])
@@ -186,6 +193,10 @@ def cast_endpoint():
     if not url: return jsonify({"status": "error"}), 400
 
     def process(target):
+        # 如果不是直链，先提示正在解析
+        if not any(target.endswith(ext) for ext in ['.m3u8', '.mp4', '.mkv', '.ts']):
+            tray_icon.notify("正在尝试解析视频地址，请稍候...", "Dollop Cast")
+            
         real = extract_video_url(target)
         if real:
             success, msg = dlna_play(real)

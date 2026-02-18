@@ -10,8 +10,8 @@ import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 
 # --- 配置 ---
-TARGET_DEVICE_IP = "192.168.1.224"
-TARGET_DEVICE_DESC_URL = "http://192.168.1.224:49152/description.xml"
+TARGET_DEVICE_IP = "192.168.1.223"
+TARGET_DEVICE_DESC_URL = "http://192.168.1.223:49152/description.xml"
 LOCAL_IP = socket.gethostbyname(socket.gethostname())
 HTTP_PORT = 8080
 HLS_FILENAME = "stream.m3u8"
