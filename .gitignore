@@ -20,3 +20,11 @@ rad.json
 *.flf
 #Test results file
 TestResults.xml
+*.ts
+*.m3u8
+create_icon.py
+dlna_play.py
+dlna_play_url.py
+dlan_scan.py
+screen_cast.py
+server.py

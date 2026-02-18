@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 320px;
+      padding: 10px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    h3 {
+      margin: 0 0 10px 0;
+      font-size: 16px;
+      color: #333;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: bold;
+      color: #666;
+      margin-top: 15px;
+      margin-bottom: 5px;
+    }
+
+    #stream-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      max-height: 250px;
+      overflow-y: auto;
+    }
+
+    .stream-item {
+      background: #f5f5f5;
+      border-radius: 4px;
+      padding: 8px;
+      margin-bottom: 5px;
+      cursor: pointer;
+      font-size: 12px;
+      word-break: break-all;
+      display: flex;
+      align-items: center;
+      transition: background 0.2s;
+    }
+
+    .stream-item:hover {
+      background: #e0e0e0;
+    }
+
+    .stream-type {
+      font-weight: bold;
+      font-size: 10px;
+      background: #2196F3;
+      color: white;
+      padding: 2px 4px;
+      border-radius: 2px;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+
+    .stream-url {
+      flex-grow: 1;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    /* 通用按钮样式 (默认为灰色/备用) */
+    button {
+      width: 100%;
+      padding: 8px;
+      background-color: #78909C;
+      color: white;
+      border: none;
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-top: 5px;
+    }
+
+    button:hover {
+      background-color: #607D8B;
+    }
+
+    /* 显眼的投屏按钮 (绿色) */
+    button.cast-btn {
+      width: auto !important;
+      margin: 0 0 0 8px !important;
+      padding: 4px 12px !important;
+      font-size: 12px !important;
+      background-color: #4CAF50 !important;
+      white-space: nowrap;
+    }
+
+    button.cast-btn:hover {
+      background-color: #45a049 !important;
+    }
+
+    #status {
+      margin-top: 10px;
+      font-size: 12px;
+      text-align: center;
+      min-height: 18px;
+    }
+
+    .empty-state {
+      font-size: 12px;
+      color: #999;
+      text-align: center;
+      padding: 15px;
+      background: #fafafa;
+      border: 1px dashed #ddd;
+    }
+  </style>
+</head>
+
+<body>
+  <h3>Dollop Cast <span id="version" style="font-size: 10px; color: #999; font-weight: normal;">v1.1</span></h3>
+
+  <div class="section-title">✨ 捕获到的视频流 (推荐)</div>
+  <ul id="stream-list">
+    <!-- 动态插入 -->
+  </ul>
+  <div id="empty-msg" class="empty-state" style="display:none;">未检测到视频流，请播放视频试试</div>
+
+  <div class="section-title">🌐 当前网页解析 (备用)</div>
+  <button id="castPageBtn">解析并投屏当前网页</button>
+
+  <div id="status"></div>
+
+  <script src="popup.js"></script>
+</body>
+
+</html>
