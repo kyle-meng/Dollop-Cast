@@ -50,9 +50,6 @@ python tray_app.py
 ## 📂 文件结构说明
 
 *   `tray_app.py`: **[主程序]** 系统托盘应用，整合了设备扫描和 Web 服务。
-*   `server.py`: (旧版) 独立的 Web 服务端，已被 tray_app 包含。
-*   `dlna_scan.py`: 独立的 DLNA 设备扫描工具。
-*   `dlna_play_url.py`: 命令行投屏工具。
 *   `screen_cast.py`: (实验性) 屏幕镜像投屏工具，基于 FFmpeg。
 *   `browser_extension/`: 浏览器插件源码。
 
