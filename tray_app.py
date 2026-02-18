@@ -5,7 +5,7 @@ import time
 import socket
 import requests
 import xml.etree.ElementTree as ET
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from collections import OrderedDict
 
 # GUI / System Tray
@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import yt_dlp
+from stream_proxy import proxy_bp
 
 # --- 全局变量 ---
 SERVER_PORT = 5000
@@ -165,6 +166,21 @@ def dlna_play(video_url):
 
 app = Flask(__name__)
 CORS(app)
+app.register_blueprint(proxy_bp)
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # 不需要真的连接，只是为了获取路由出口IP
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
+LOCAL_IP = get_local_ip()
 
 def extract_video_url(web_url):
     if any(web_url.endswith(ext) for ext in ['.m3u8', '.mp4', '.mkv', '.ts']):
@@ -182,8 +198,8 @@ def extract_video_url(web_url):
             info = ydl.extract_info(web_url, download=False)
             if 'url' in info: return info['url']
             elif 'formats' in info: return info['formats'][-1]['url']
-    except Exception as e:
-        print(f"解析错误: {e}")
+    except:
+        pass
     return None
 
 @app.route('/cast', methods=['POST'])
@@ -199,7 +215,23 @@ def cast_endpoint():
             
         real = extract_video_url(target)
         if real:
-            success, msg = dlna_play(real)
+            # 判断是否需要代理 (针对防盗链站点)
+            need_proxy = False
+            for domain in ['youku.com', 'iqiyi.com', 'bilibili.com', 'bilivideo.com', 'qq.com']:
+                if domain in real:
+                    need_proxy = True
+                    break
+            
+            if need_proxy:
+                # 构造本机代理地址
+                # 注意：必须对原 URL 进行编码，防止参数混淆
+                proxy_url = f"http://{LOCAL_IP}:{SERVER_PORT}/proxy?url={quote(real)}"
+                print(f"启用本地代理转发: {proxy_url}")
+                final_url = proxy_url
+            else:
+                final_url = real
+
+            success, msg = dlna_play(final_url)
             if success: tray_icon.notify(f"投屏成功: {target[:30]}...", "Dollop Cast")
             else: tray_icon.notify(f"投屏失败: {msg}", "Dollop Cast")
         else:
@@ -210,7 +242,8 @@ def cast_endpoint():
     return jsonify({"status": "ok"})
 
 def start_server():
-    app.run(host='127.0.0.1', port=SERVER_PORT, debug=False, use_reloader=False)
+    # 监听 0.0.0.0 以允许局域网访问 (代理需要)
+    app.run(host='0.0.0.0', port=SERVER_PORT, debug=False, use_reloader=False)
 
 # --- 3. System Tray Logic ---
 
