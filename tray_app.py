@@ -279,12 +279,10 @@ def prefetch_segments(content, base_url, proxy_endpoint):
 
 def download_and_process_m3u8(url, local_ip, use_proxy_segment=True):
     """
-    下载 m3u8 改写内容
-    use_proxy_segment=True: 切片走本机 /segment 代理
-    use_proxy_segment=False: 切片直连 (只补全绝对路径)
+    下载 m3u8 改写内容 (支持 Master Playlist 和 Media Playlist)
     """
+    import re
     try:
-        # ... (下载逻辑不变) ...
         # 1. 下载原始 m3u8 (尽量带防盗链头)
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -302,38 +300,66 @@ def download_and_process_m3u8(url, local_ip, use_proxy_segment=True):
         new_lines = []
         base_url = url.rsplit('/', 1)[0] + '/'
         host_url = f"http://{local_ip}:{SERVER_PORT}"
+        
+        next_is_playlist = False
 
         for line in content.splitlines():
             line = line.strip()
-            if line and not line.startswith('#'):
-                # 补全绝对路径
+            if not line: continue
+            
+            # 处理 Master Playlist 中的内嵌 URI
+            if line.startswith('#EXT-X-MEDIA:URI='):
+                match = re.search(r'URI="(.*?)"', line)
+                if match:
+                    orig_uri = match.group(1)
+                    if not orig_uri.startswith('http'):
+                        abs_uri = requests.compat.urljoin(base_url, orig_uri)
+                    else:
+                        abs_uri = orig_uri
+                        
+                    new_uri = f"{host_url}/playlist?url={requests.utils.quote(abs_uri)}"
+                    new_line = line.replace(orig_uri, new_uri)
+                    new_lines.append(new_line)
+                    continue
+
+            if line.startswith('#'):
+                # 检查是否是 Stream Inf (下一行也是 playlist)
+                if line.startswith('#EXT-X-STREAM-INF'):
+                    next_is_playlist = True
+                new_lines.append(line)
+            else:
+                # 这是一个 URL 行
                 if not line.startswith('http'):
                     abs_url = requests.compat.urljoin(base_url, line)
                 else:
                     abs_url = line
                 
-                if use_proxy_segment:
-                    # 改写为本机代理
-                    new_line = f"{host_url}/segment?url={requests.utils.quote(abs_url)}"
+                if next_is_playlist:
+                    # 这是一条 m3u8 链接 (Master Playlist 里的子链接) -> /playlist
+                    new_line = f"{host_url}/playlist?url={requests.utils.quote(abs_url)}"
+                    next_is_playlist = False
                 else:
-                    # 直连模式 (保留绝对路径)
-                    new_line = abs_url
+                    # 这是一条切片链接 (Media Playlist) -> /segment
+                    if use_proxy_segment:
+                        new_line = f"{host_url}/segment?url={requests.utils.quote(abs_url)}"
+                    else:
+                        new_line = abs_url
 
                 new_lines.append(new_line)
-            else:
-                new_lines.append(line)
         
         # 3. 保存到本地
         local_filename = 'video.m3u8'
         with open(os.path.join(CACHE_DIR, local_filename), 'w', encoding='utf-8') as f:
             f.write('\n'.join(new_lines))
             
-        print(f"m3u8已缓存 (代理切片: {use_proxy_segment}): {local_filename}")
+        print(f"m3u8已缓存: {local_filename}")
 
-        # --- 启动预加载 (如果启用了代理) ---
+        # --- 4. 启动预加载 (仅当是 Media Playlist 时) ---
         if use_proxy_segment:
-            proxy_endpoint = f"{host_url}/segment"
-            threading.Thread(target=prefetch_segments, args=(content, base_url, proxy_endpoint), daemon=True).start()
+             proxy_endpoint = f"{host_url}/segment"
+             # 只有当 new_lines 里包含 segment 时才启动 (Master Playlist 没有 segment，只有 playlist)
+             if any('/segment?url=' in l for l in new_lines):
+                 threading.Thread(target=prefetch_segments, args=(content, base_url, proxy_endpoint), daemon=True).start()
 
         return f"{host_url}/cache/{local_filename}"
 
@@ -358,7 +384,7 @@ def cast_endpoint():
             
             # 判断是否是必须本地缓存的站点 (处理 m3u8 防盗链)
             must_process_locally = False
-            for domain in ['youku.com', 'iqiyi.com', 'bilibili.com', 'bilivideo.com', 'qq.com']:
+            for domain in ['youku.com', 'iqiyi.com', 'bilibili.com', 'bilivideo.com', 'qq.com', 'youtube.com', 'googlevideo.com']:
                 if domain in real:
                     must_process_locally = True
                     break
