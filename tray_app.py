@@ -238,7 +238,16 @@ def serve_local_file(file_id):
 def serve_cache(filename):
     return send_from_directory(CACHE_DIR, filename)
 
-def prefetch_segments(content, base_url, proxy_endpoint):
+CURRENT_PREFETCH_STOP_EVENT = None
+
+def stop_prefetch():
+    global CURRENT_PREFETCH_STOP_EVENT
+    if CURRENT_PREFETCH_STOP_EVENT:
+        print("停止旧的后台预加载任务...")
+        CURRENT_PREFETCH_STOP_EVENT.set()
+        CURRENT_PREFETCH_STOP_EVENT = None
+
+def prefetch_segments(content, base_url, proxy_endpoint, stop_event=None):
     """
     后台预加载线程：解析 m3u8 中的 TS 链接并请求本机代理缓存
     """
@@ -257,9 +266,13 @@ def prefetch_segments(content, base_url, proxy_endpoint):
     print(f"预加载列表: 共 {len(urls)} 个分片")
     
     BATCH_SIZE = 10
-    BATCH_INTERVAL = 60
+    BATCH_INTERVAL = 120
 
     for i, u in enumerate(urls):
+        if stop_event and stop_event.is_set():
+             print("预加载被中止")
+             return
+
         try:
             # 请求本机 proxy 接口
             target = f"{proxy_endpoint}?url={requests.utils.quote(u)}"
@@ -269,7 +282,10 @@ def prefetch_segments(content, base_url, proxy_endpoint):
             # 每下载完一批，休息一段时间
             if (i + 1) % BATCH_SIZE == 0:
                 print(f"预加载进度: {i+1}/{len(urls)}。暂停 {BATCH_INTERVAL} 秒...")
-                time.sleep(BATCH_INTERVAL)
+                # 分段 sleep 以便响应停止信号
+                for _ in range(BATCH_INTERVAL):
+                    if stop_event and stop_event.is_set(): return
+                    time.sleep(1)
             else:
                  time.sleep(0.05)
             
@@ -279,10 +295,12 @@ def prefetch_segments(content, base_url, proxy_endpoint):
 
 def download_and_process_m3u8(url, local_ip, use_proxy_segment=True):
     """
-    下载 m3u8 改写内容 (支持 Master Playlist 和 Media Playlist)
+    下载 m3u8 改写内容
+    use_proxy_segment=True: 切片走本机 /segment 代理
+    use_proxy_segment=False: 切片直连 (只补全绝对路径)
     """
-    import re
     try:
+        # ... (下载逻辑不变) ...
         # 1. 下载原始 m3u8 (尽量带防盗链头)
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -300,66 +318,44 @@ def download_and_process_m3u8(url, local_ip, use_proxy_segment=True):
         new_lines = []
         base_url = url.rsplit('/', 1)[0] + '/'
         host_url = f"http://{local_ip}:{SERVER_PORT}"
-        
-        next_is_playlist = False
 
         for line in content.splitlines():
             line = line.strip()
-            if not line: continue
-            
-            # 处理 Master Playlist 中的内嵌 URI
-            if line.startswith('#EXT-X-MEDIA:URI='):
-                match = re.search(r'URI="(.*?)"', line)
-                if match:
-                    orig_uri = match.group(1)
-                    if not orig_uri.startswith('http'):
-                        abs_uri = requests.compat.urljoin(base_url, orig_uri)
-                    else:
-                        abs_uri = orig_uri
-                        
-                    new_uri = f"{host_url}/playlist?url={requests.utils.quote(abs_uri)}"
-                    new_line = line.replace(orig_uri, new_uri)
-                    new_lines.append(new_line)
-                    continue
-
-            if line.startswith('#'):
-                # 检查是否是 Stream Inf (下一行也是 playlist)
-                if line.startswith('#EXT-X-STREAM-INF'):
-                    next_is_playlist = True
-                new_lines.append(line)
-            else:
-                # 这是一个 URL 行
+            if line and not line.startswith('#'):
+                # 补全绝对路径
                 if not line.startswith('http'):
                     abs_url = requests.compat.urljoin(base_url, line)
                 else:
                     abs_url = line
                 
-                if next_is_playlist:
-                    # 这是一条 m3u8 链接 (Master Playlist 里的子链接) -> /playlist
-                    new_line = f"{host_url}/playlist?url={requests.utils.quote(abs_url)}"
-                    next_is_playlist = False
+                if use_proxy_segment:
+                    # 改写为本机代理
+                    new_line = f"{host_url}/segment?url={requests.utils.quote(abs_url)}"
                 else:
-                    # 这是一条切片链接 (Media Playlist) -> /segment
-                    if use_proxy_segment:
-                        new_line = f"{host_url}/segment?url={requests.utils.quote(abs_url)}"
-                    else:
-                        new_line = abs_url
+                    # 直连模式 (保留绝对路径)
+                    new_line = abs_url
 
                 new_lines.append(new_line)
+            else:
+                new_lines.append(line)
         
         # 3. 保存到本地
         local_filename = 'video.m3u8'
         with open(os.path.join(CACHE_DIR, local_filename), 'w', encoding='utf-8') as f:
             f.write('\n'.join(new_lines))
             
-        print(f"m3u8已缓存: {local_filename}")
+        print(f"m3u8已缓存 (代理切片: {use_proxy_segment}): {local_filename}")
 
-        # --- 4. 启动预加载 (仅当是 Media Playlist 时) ---
+        # --- 启动预加载 (如果启用了代理) ---
         if use_proxy_segment:
-             proxy_endpoint = f"{host_url}/segment"
-             # 只有当 new_lines 里包含 segment 时才启动 (Master Playlist 没有 segment，只有 playlist)
-             if any('/segment?url=' in l for l in new_lines):
-                 threading.Thread(target=prefetch_segments, args=(content, base_url, proxy_endpoint), daemon=True).start()
+            proxy_endpoint = f"{host_url}/segment"
+            
+            # 初始化停止信号
+            global CURRENT_PREFETCH_STOP_EVENT
+            stop_prefetch() # 先停止旧的
+            CURRENT_PREFETCH_STOP_EVENT = threading.Event()
+            
+            threading.Thread(target=prefetch_segments, args=(content, base_url, proxy_endpoint, CURRENT_PREFETCH_STOP_EVENT), daemon=True).start()
 
         return f"{host_url}/cache/{local_filename}"
 
@@ -374,6 +370,9 @@ def cast_endpoint():
     if not url: return jsonify({"status": "error"}), 400
 
     def process(target):
+        # 0. 停止之前的预加载任务
+        stop_prefetch()
+
         # ... (解析逻辑不变) ...
         if not any(target.endswith(ext) for ext in ['.m3u8', '.mp4', '.mkv', '.ts']):
             tray_icon.notify("正在尝试解析视频地址，请稍候...", "Dollop Cast")
@@ -384,7 +383,7 @@ def cast_endpoint():
             
             # 判断是否是必须本地缓存的站点 (处理 m3u8 防盗链)
             must_process_locally = False
-            for domain in ['youku.com', 'iqiyi.com', 'bilibili.com', 'bilivideo.com', 'qq.com', 'youtube.com', 'googlevideo.com']:
+            for domain in ['youku.com','cibntv.net', 'iqiyi.com', 'bilibili.com', 'bilivideo.com', 'qq.com','googlevideo.com','youtube.com']:
                 if domain in real:
                     must_process_locally = True
                     break

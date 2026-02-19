@@ -25,6 +25,8 @@ def get_headers_for_m3u8(url):
         headers['Referer'] = 'https://www.bilibili.com/'
     elif 'qq.com' in parsed.netloc:
         headers['Referer'] = 'https://v.qq.com/'
+    elif 'googlevideo.com' in parsed.netloc:
+        headers['Referer'] = 'https://www.youtube.com/'
     else:
         headers['Referer'] = f"{parsed.scheme}://{parsed.netloc}/"
     return headers
@@ -139,7 +141,8 @@ def handle_segment():
             headers['Referer'] = 'https://www.bilibili.com/'
         elif 'youku.com' in domain or 'cibntv.net' in domain: 
              headers['Referer'] = 'https://www.youku.com/'
-
+        elif 'googlevideo.com' in domain:
+            headers['Referer'] = 'https://www.youtube.com/'
         if is_large_file:
             # --- 大文件模式：流式透传 + Range 支持 ---
             
@@ -156,9 +159,25 @@ def handle_segment():
             resp_headers = [(name, value) for (name, value) in resp.headers.items()
                             if name.lower() not in excluded_headers]
 
-            # 4. 返回流式响应 (支持 206)
+            # 4. 返回流式响应 (自定义生成器以容忍中断)
+            def generate():
+                try:
+                    for chunk in resp.iter_content(chunk_size=128 * 1024):
+                        if chunk:
+                            yield chunk
+                except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError) as e:
+                    print(f"流传输中断 (客户端可重试): {e}")
+                    # 不抛出异常，让流正常结束，客户端会检测到 Content-Length 不符而重试
+                except Exception as e:
+                    # 尝试捕获 IncompleteRead (它有时被封装在 ProtocolError 中)
+                    import http.client
+                    if isinstance(e, http.client.IncompleteRead) or "IncompleteRead" in str(e):
+                         print(f"流读取未完成 (IncompleteRead): {e}")
+                    else:
+                         print(f"流传输未知错误: {e}")
+
             return Response(
-                stream_with_context(resp.iter_content(chunk_size=128 * 1024)),
+                stream_with_context(generate()),
                 status=resp.status_code,
                 headers=resp_headers,
                 direct_passthrough=True
