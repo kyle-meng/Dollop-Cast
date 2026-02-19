@@ -5,6 +5,9 @@ import threading
 import time
 import socket
 import requests
+import uuid
+import tkinter as tk
+from tkinter import filedialog
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse, quote
 from collections import OrderedDict
@@ -15,7 +18,7 @@ from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 
 # Web Server & DLNA Logic
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 import yt_dlp
 from stream_proxy import proxy_bp
@@ -28,6 +31,7 @@ current_control_url = None
 tray_icon = None
 ENABLE_PROXY = True # 全局代理开关
 LOCAL_DEBUG_MODE = False # 本地调试模式开关
+local_files_map = {} # { "uuid": "absolute_file_path" }
 
 
 
@@ -222,6 +226,14 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 
+@app.route('/local/<file_id>')
+def serve_local_file(file_id):
+    """Serve selected local file by ID"""
+    file_path = local_files_map.get(file_id)
+    if not file_path or not os.path.exists(file_path):
+        return "File not found or expired", 404
+    return send_file(file_path)
+
 @app.route('/cache/<path:filename>')
 def serve_cache(filename):
     return send_from_directory(CACHE_DIR, filename)
@@ -379,7 +391,7 @@ def cast_endpoint():
             if LOCAL_DEBUG_MODE:
                 print(f"本地调试模式已开启，尝试在浏览器打开: {final_url}")
                 webbrowser.open(final_url)
-                tray_icon.notify(f"已在浏览器打开: {final_url}", "Dollop Cast")
+                tray_icon.notify(f"已在浏览器打开: {final_url[:50]}", "Dollop Cast")
             else:
                 success, msg = dlna_play(final_url)
                 if success: tray_icon.notify(f"投屏成功: {target[:30]}...", "Dollop Cast")
@@ -387,9 +399,9 @@ def cast_endpoint():
         else:
             # 尝试盲投
             if LOCAL_DEBUG_MODE:
-                 print(f"本地调试模式 (盲投): {target}")
+                 print(f"本地调试模式 (盲投): {target[:50]}...")
                  webbrowser.open(target)
-                 tray_icon.notify(f"已在浏览器打开: {target}", "Dollop Cast")
+                 tray_icon.notify(f"已在浏览器打开: {target[:50]}...", "Dollop Cast")
             else:
                  dlna_play(target)
 
@@ -457,6 +469,41 @@ def build_menu():
         toggle_debug,
         checked=lambda item: LOCAL_DEBUG_MODE
     ))
+    
+    # 本地文件投屏
+    def cast_local_file(icon, item):
+        def _task():
+            try:
+                # 简单的 tkinter 文件选择
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                file_path = filedialog.askopenfilename(
+                    title="选择视频文件",
+                    filetypes=[("视频文件", "*.mp4;*.mkv;*.avi;*.mov;*.flv;*.ts"), ("所有文件", "*.*")]
+                )
+                root.destroy()
+                
+                if file_path:
+                    fid = str(uuid.uuid4())
+                    local_files_map[fid] = file_path
+                    # 必须 quote 文件名? 不，这里是 ID
+                    play_url = f"http://{LOCAL_IP}:{SERVER_PORT}/local/{fid}"
+                    
+                    if LOCAL_DEBUG_MODE:
+                        webbrowser.open(play_url)
+                    else:
+                        success, msg = dlna_play(play_url)
+                        if success: 
+                            tray_icon.notify(f"投屏中: {os.path.basename(file_path)}", "Dollop Cast")
+                        else: 
+                            tray_icon.notify(f"失败: {msg}", "Dollop Cast")
+            except Exception as e:
+                print(f"本地文件投屏错误: {e}")
+
+        threading.Thread(target=_task).start()
+
+    items.append(item('投放本地文件...', cast_local_file))
     
     items.append(item(lambda item: '----------------', lambda icon, item: None))
 

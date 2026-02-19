@@ -117,6 +117,7 @@ def handle_segment():
         file_hash = hashlib.md5(target_url.encode('utf-8')).hexdigest()
         local_path = os.path.join(SEGMENT_CACHE_DIR, f"{file_hash}.ts")
         if os.path.exists(local_path):
+            print(f"缓存命中: {local_path}")
             return send_file(local_path)
 
     try:
