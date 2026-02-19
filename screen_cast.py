@@ -10,13 +10,13 @@ import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 
 # --- 配置 ---
-TARGET_DEVICE_IP = "192.168.1.223"
-TARGET_DEVICE_DESC_URL = "http://192.168.1.223:49152/description.xml"
+TARGET_DEVICE_IP = "192.168.1.224"
+TARGET_DEVICE_DESC_URL = "http://192.168.1.224:49152/description.xml"
 LOCAL_IP = socket.gethostbyname(socket.gethostname())
 HTTP_PORT = 8080
 HLS_FILENAME = "stream.m3u8"
-SEGMENT_FILENAME = "segment%03d.ts"
-HLS_TIME = 2  # 分片时间(秒)，越小延迟越低但CPU消耗越高
+SEGMENT_FILENAME = "http://192.168.1.85:8080/segment%03d.ts"
+HLS_TIME = 2  # 分片时间(秒)，2秒是一个平衡点
 LIST_SIZE = 5 # 播放列表保留的分片数
 
 # --- 1. 获取本地 IP ---
@@ -150,6 +150,13 @@ def start_ffmpeg():
     # -tune zerolatency: 零延迟调优
     # -vf scale=1280:-2: 缩放到 720p 以降低带宽和性能压力 (可选)
     # -f hls: 输出为 HLS 流
+    # 解析 SEGMENT_FILENAME
+    hls_segment_filename = SEGMENT_FILENAME
+    hls_base_url = None
+    if SEGMENT_FILENAME.startswith('http'):
+        hls_segment_filename = SEGMENT_FILENAME.split('/')[-1]
+        hls_base_url = SEGMENT_FILENAME.replace(hls_segment_filename, '')
+
     cmd = [
         'ffmpeg',
         '-f', 'gdigrab',
@@ -158,25 +165,32 @@ def start_ffmpeg():
         '-video_size', '1920x1080',
         '-i', 'desktop',
         '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-        '-vf', 'scale=1280:720,format=yuv420p',
+        '-vf', 'scale=1920:1080,format=yuv420p',
         '-c:v', 'libx264',
-        '-preset', 'ultrafast',
+        '-preset', 'veryfast', # 稍微慢一点但质量更好，ultrafast可能产生过大的流
         '-tune', 'zerolatency',
-        '-profile:v', 'main',
-        '-level', '3.1',
+        '-maxrate', '6000k',
+        '-bufsize', '12000k',
+        '-profile:v', 'high', # 1080p 使用 high profile 更高效
+        '-level', '4.1',
         '-c:a', 'aac',
         '-ac', '2',
         '-ar', '44100', # 强制 44.1kHz 采样率
         '-b:a', '128k',
-        '-g', '60',     # 关键帧间隔 2秒 (配合 4秒切片)
+        '-g', '60',     # 关键帧间隔 2秒 (配合 2秒切片)
         '-keyint_min', '60',
         '-sc_threshold', '0',
         '-f', 'hls',
-        '-hls_time', '4', # 增加切片时长到 4 秒
-        '-hls_list_size', '6',
+        '-hls_time', str(HLS_TIME), # 增加切片时长到 1 秒
+        '-hls_list_size', str(LIST_SIZE),
         '-hls_flags', 'delete_segments+append_list',
-        HLS_FILENAME
     ]
+
+    if hls_base_url:
+        cmd.extend(['-hls_base_url', hls_base_url])
+    
+    cmd.extend(['-hls_segment_filename', hls_segment_filename])
+    cmd.append(HLS_FILENAME)
     
     print("正在启动 FFmpeg 录屏推流... (按 Ctrl+C 停止)")
     print("注意：如果报错，请检查屏幕分辨率设置。")

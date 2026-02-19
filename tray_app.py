@@ -1,3 +1,4 @@
+import webbrowser
 import os
 import sys
 import threading
@@ -14,7 +15,7 @@ from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 
 # Web Server & DLNA Logic
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import yt_dlp
 from stream_proxy import proxy_bp
@@ -25,8 +26,10 @@ found_devices = OrderedDict() # { "Friend Name": "Control URL" }
 selected_device_name = None
 current_control_url = None
 tray_icon = None
+ENABLE_PROXY = True # 全局代理开关
+LOCAL_DEBUG_MODE = False # 本地调试模式开关
 
-# --- 1. DLNA 扫描与控制 ---
+
 
 def get_control_url_from_desc(desc_url):
     try:
@@ -185,6 +188,16 @@ LOCAL_IP = get_local_ip()
 def extract_video_url(web_url):
     if any(web_url.endswith(ext) for ext in ['.m3u8', '.mp4', '.mkv', '.ts']):
         return web_url
+    
+    # 针对 Bilibili 使用专用解析器 (更快、更准)
+    if 'bilibili.com' in web_url or 'BV' in web_url:
+        try:
+            import bili_parser
+            bili_url = bili_parser.get_bilibili_stream(web_url)
+            if bili_url: return bili_url
+        except Exception:
+            pass
+
     try:
         # 优化 yt-dlp 配置：优先 MP4，避免 DASH (除非电视支持)
         ydl_opts = {
@@ -198,9 +211,123 @@ def extract_video_url(web_url):
             info = ydl.extract_info(web_url, download=False)
             if 'url' in info: return info['url']
             elif 'formats' in info: return info['formats'][-1]['url']
-    except:
-        pass
+    except Exception as e:
+        print(f"解析失败: {e}")
     return None
+
+# --- 路由：静态文件服务 (cache) ---
+import os
+
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+
+@app.route('/cache/<path:filename>')
+def serve_cache(filename):
+    return send_from_directory(CACHE_DIR, filename)
+
+def prefetch_segments(content, base_url, proxy_endpoint):
+    """
+    后台预加载线程：解析 m3u8 中的 TS 链接并请求本机代理缓存
+    """
+    import time
+    print("后台预加载开始...")
+    urls = []
+    for line in content.splitlines():
+        line = line.strip()
+        if line and not line.startswith('#'):
+            if not line.startswith('http'):
+                abs_url = requests.compat.urljoin(base_url, line)
+            else:
+                abs_url = line
+            urls.append(abs_url)
+    
+    print(f"预加载列表: 共 {len(urls)} 个分片")
+    
+    BATCH_SIZE = 10
+    BATCH_INTERVAL = 60
+
+    for i, u in enumerate(urls):
+        try:
+            # 请求本机 proxy 接口
+            target = f"{proxy_endpoint}?url={requests.utils.quote(u)}"
+            requests.get(target, timeout=20) 
+            
+            # --- 批次控制 ---
+            # 每下载完一批，休息一段时间
+            if (i + 1) % BATCH_SIZE == 0:
+                print(f"预加载进度: {i+1}/{len(urls)}。暂停 {BATCH_INTERVAL} 秒...")
+                time.sleep(BATCH_INTERVAL)
+            else:
+                 time.sleep(0.05)
+            
+        except Exception as e:
+            pass
+    print("后台预加载结束")
+
+def download_and_process_m3u8(url, local_ip, use_proxy_segment=True):
+    """
+    下载 m3u8 改写内容
+    use_proxy_segment=True: 切片走本机 /segment 代理
+    use_proxy_segment=False: 切片直连 (只补全绝对路径)
+    """
+    try:
+        # ... (下载逻辑不变) ...
+        # 1. 下载原始 m3u8 (尽量带防盗链头)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://www.youku.com/' 
+        }
+        if 'Host' in headers: del headers['Host']
+        
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            print(f"m3u8下载失败: {resp.status_code}")
+            return None
+
+        # 2. 改写内容
+        content = resp.content.decode('utf-8', errors='ignore')
+        new_lines = []
+        base_url = url.rsplit('/', 1)[0] + '/'
+        host_url = f"http://{local_ip}:{SERVER_PORT}"
+
+        for line in content.splitlines():
+            line = line.strip()
+            if line and not line.startswith('#'):
+                # 补全绝对路径
+                if not line.startswith('http'):
+                    abs_url = requests.compat.urljoin(base_url, line)
+                else:
+                    abs_url = line
+                
+                if use_proxy_segment:
+                    # 改写为本机代理
+                    new_line = f"{host_url}/segment?url={requests.utils.quote(abs_url)}"
+                else:
+                    # 直连模式 (保留绝对路径)
+                    new_line = abs_url
+
+                new_lines.append(new_line)
+            else:
+                new_lines.append(line)
+        
+        # 3. 保存到本地
+        local_filename = 'video.m3u8'
+        with open(os.path.join(CACHE_DIR, local_filename), 'w', encoding='utf-8') as f:
+            f.write('\n'.join(new_lines))
+            
+        print(f"m3u8已缓存 (代理切片: {use_proxy_segment}): {local_filename}")
+
+        # --- 启动预加载 (如果启用了代理) ---
+        if use_proxy_segment:
+            proxy_endpoint = f"{host_url}/segment"
+            threading.Thread(target=prefetch_segments, args=(content, base_url, proxy_endpoint), daemon=True).start()
+
+        return f"{host_url}/cache/{local_filename}"
+
+    except Exception as e:
+        print(f"处理m3u8出错: {e}")
+        return None
 
 @app.route('/cast', methods=['POST'])
 def cast_endpoint():
@@ -209,34 +336,62 @@ def cast_endpoint():
     if not url: return jsonify({"status": "error"}), 400
 
     def process(target):
-        # 如果不是直链，先提示正在解析
+        # ... (解析逻辑不变) ...
         if not any(target.endswith(ext) for ext in ['.m3u8', '.mp4', '.mkv', '.ts']):
             tray_icon.notify("正在尝试解析视频地址，请稍候...", "Dollop Cast")
             
         real = extract_video_url(target)
         if real:
-            # 判断是否需要代理 (针对防盗链站点)
-            need_proxy = False
+            print(f"解析得到直链: {real}")
+            
+            # 判断是否是必须本地缓存的站点 (处理 m3u8 防盗链)
+            must_process_locally = False
             for domain in ['youku.com', 'iqiyi.com', 'bilibili.com', 'bilivideo.com', 'qq.com']:
                 if domain in real:
-                    need_proxy = True
+                    must_process_locally = True
                     break
             
-            if need_proxy:
-                # 构造本机代理地址
-                # 注意：必须对原 URL 进行编码，防止参数混淆
-                proxy_url = f"http://{LOCAL_IP}:{SERVER_PORT}/proxy?url={quote(real)}"
-                print(f"启用本地代理转发: {proxy_url}")
-                final_url = proxy_url
-            else:
-                final_url = real
+            final_url = real
+            if must_process_locally:
+                # 区分 m3u8 还是直链视频 (MP4/FLV)
+                # B站通常给的是 flv/mp4 直链，不能用 m3u8 逻辑处理
+                is_playlist = '.m3u8' in real or '/m3u8' in real
+                
+                if is_playlist:
+                    # m3u8: 下载清单 -> 改写 -> 预加载 -> 投送本地文件
+                    local_m3u8_url = download_and_process_m3u8(real, LOCAL_IP, use_proxy_segment=ENABLE_PROXY)
+                    if local_m3u8_url:
+                        final_url = local_m3u8_url
+                        print(f"投屏本地 m3u8: {final_url} (代理: {ENABLE_PROXY})")
+                    else:
+                        print("m3u8 处理失败，回退到原始地址")
+                else:
+                    # MP4/FLV: 
+                    if ENABLE_PROXY:
+                        # 走流式代理 (解决 Referer 问题)
+                        # http://本机:5000/segment?url=...
+                        final_url = f"http://{LOCAL_IP}:{SERVER_PORT}/segment?url={requests.utils.quote(real)}"
+                        print(f"投屏流式代理 (MP4/FLV): {final_url}")
+                    else:
+                        # 直连 (可能因 Referer 失败)
+                        print("直连投屏 (无代理)")
 
-            success, msg = dlna_play(final_url)
-            if success: tray_icon.notify(f"投屏成功: {target[:30]}...", "Dollop Cast")
-            else: tray_icon.notify(f"投屏失败: {msg}", "Dollop Cast")
+            if LOCAL_DEBUG_MODE:
+                print(f"本地调试模式已开启，尝试在浏览器打开: {final_url}")
+                webbrowser.open(final_url)
+                tray_icon.notify(f"已在浏览器打开: {final_url}", "Dollop Cast")
+            else:
+                success, msg = dlna_play(final_url)
+                if success: tray_icon.notify(f"投屏成功: {target[:30]}...", "Dollop Cast")
+                else: tray_icon.notify(f"投屏失败: {msg}", "Dollop Cast")
         else:
             # 尝试盲投
-            dlna_play(target)
+            if LOCAL_DEBUG_MODE:
+                 print(f"本地调试模式 (盲投): {target}")
+                 webbrowser.open(target)
+                 tray_icon.notify(f"已在浏览器打开: {target}", "Dollop Cast")
+            else:
+                 dlna_play(target)
 
     threading.Thread(target=process, args=(url,)).start()
     return jsonify({"status": "ok"})
@@ -278,6 +433,32 @@ def build_menu():
     # pystray 要求动态文本函数接受一个 item 参数
     items.append(item(f'Dollop Cast 服务运行中 (:5000)', lambda icon, item: None, enabled=False))
     items.append(item(lambda item: '----------------', lambda icon, item: None)) # 分隔符
+
+    # 代理开关
+    def toggle_proxy(icon, item):
+        global ENABLE_PROXY
+        ENABLE_PROXY = not ENABLE_PROXY
+        update_menu()
+
+    items.append(item(
+        '启用防盗链代理',
+        toggle_proxy,
+        checked=lambda item: ENABLE_PROXY
+    ))
+    
+    # 调试开关
+    def toggle_debug(icon, item):
+        global LOCAL_DEBUG_MODE
+        LOCAL_DEBUG_MODE = not LOCAL_DEBUG_MODE
+        update_menu()
+
+    items.append(item(
+        '启用本地调试 (浏览器播放)',
+        toggle_debug,
+        checked=lambda item: LOCAL_DEBUG_MODE
+    ))
+    
+    items.append(item(lambda item: '----------------', lambda icon, item: None))
 
     # 设备列表
     if not found_devices:

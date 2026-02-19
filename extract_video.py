@@ -18,7 +18,7 @@ def extract_video_url(web_url):
             elif 'formats' in info: return info['formats'][-1]['url']
     except Exception as e:
         print(f"解析错误: {e}")
-    return None
+        return None
 
 # 腾讯视频
 # https://v.qq.com/x/cover/mzc0020016apvkq/w0046k2cfd4.html
@@ -29,4 +29,7 @@ def extract_video_url(web_url):
 # 哔哩哔哩
 # https://www.bilibili.com/video/BV1kXZ2B1EWr/
 # 
-print(extract_video_url("https://www.iqiyi.com/v_1xghiumsit0.html"))
+
+iqy = 'https://www.iqiyi.com/v_1xghiumsit0.html'
+bil = 'https://www.bilibili.com/video/BV1kXZ2B1EWr/'
+print(extract_video_url("https://v.qq.com/x/cover/mzc0020016apvkq/w0046k2cfd4.html"))
