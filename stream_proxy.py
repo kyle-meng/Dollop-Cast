@@ -143,6 +143,10 @@ def handle_segment():
              headers['Referer'] = 'https://www.youku.com/'
         elif 'googlevideo.com' in domain:
             headers['Referer'] = 'https://www.youtube.com/'
+        elif 'baidupcs.com' in domain or 'pan.baidu.com' in domain:
+             # 百度网盘必须使用特定客户端 UA 才能下载，否则报错 errno -6
+             headers['User-Agent'] = 'netdisk;P2SP;3.0'
+             headers['Referer'] = 'https://pan.baidu.com/'
         if is_large_file:
             # --- 大文件模式：流式透传 + Range 支持 ---
             

@@ -383,7 +383,7 @@ def cast_endpoint():
             
             # 判断是否是必须本地缓存的站点 (处理 m3u8 防盗链)
             must_process_locally = False
-            for domain in ['youku.com','cibntv.net', 'iqiyi.com', 'bilibili.com', 'bilivideo.com', 'qq.com','googlevideo.com','youtube.com']:
+            for domain in ['youku.com','cibntv.net', 'iqiyi.com', 'bilibili.com', 'bilivideo.com', 'qq.com','googlevideo.com','youtube.com','pan.baidu.com']:
                 if domain in real:
                     must_process_locally = True
                     break
