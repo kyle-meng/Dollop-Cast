@@ -310,31 +310,171 @@ WEB_UI_HTML = """
     <title>Dollop Cast 中心</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <style>
-        body { font-family: -apple-system, system-ui, sans-serif; background: #f0f2f5; margin: 0; padding: 15px; color: #1c1e21; }
-        .card { background: white; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
-        h2 { margin: 0 0 15px 0; font-size: 1.1rem; display: flex; align-items: center; }
-        h2::before { content: '•'; color: #2196F3; font-size: 2rem; margin-right: 8px; }
-        .shortcut-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
-        .tile { position: relative; background: #e3f2fd; border-radius: 10px; padding: 15px; display: flex; flex-direction: column; align-items: center; text-align: center; cursor: pointer; border: 1px solid #bbdefb; }
-        .tile-icon { font-size: 24px; margin-bottom: 8px; }
-        .tile-name { font-weight: bold; font-size: 0.9rem; margin-bottom: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; width: 100%; }
-        .tile-del { position: absolute; top: 5px; right: 5px; color: #ff5252; padding: 5px; font-size: 18px; }
-        .btn { padding: 10px 18px; border: none; border-radius: 8px; background: #2196F3; color: white; font-weight: bold; width: 100%; margin-top: 10px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; }
+
+        /* ===== 基础 ===== */
+        body {
+            font-family: -apple-system, system-ui, sans-serif;
+            background: #f0f2f5;
+            color: #1c1e21;
+            display: flex;
+            flex-direction: column;
+        }
+        .card { background: white; border-radius: 12px; padding: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+        h2 { font-size: 1rem; display: flex; align-items: center; margin-bottom: 12px; }
+        h2::before { content: '•'; color: #2196F3; font-size: 1.8rem; margin-right: 8px; }
+        .btn { padding: 10px 18px; border: none; border-radius: 8px; background: #2196F3; color: white; font-weight: bold; width: 100%; margin-top: 10px; cursor: pointer; }
         .btn-small { padding: 6px 10px; font-size: 0.8rem; background: #607d8b; width: auto; }
-        input[type="text"] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; margin-bottom: 10px; }
-        .device-item { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-radius: 8px; background: #f8f9fa; margin-bottom: 8px; }
+        input[type="text"] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 10px; }
+        .device-item { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-radius: 8px; background: #f8f9fa; margin-bottom: 8px; cursor: pointer; }
         .active { border-left: 5px solid #4CAF50; background: #e8f5e9; }
+
+        /* ===== 顶部栏（固定）===== */
+        .top-bar {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+            height: 50px;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 0 15px;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .top-bar-title { font-weight: bold; font-size: 1rem; color: #333; }
+        .mode-toggle { border: none; border-radius: 20px; padding: 7px 16px; font-size: 0.82rem; font-weight: bold; cursor: pointer; transition: all 0.2s; }
+        .mode-toggle.settings { background: #fff3e0; color: #e65100; }
+        .mode-toggle.use     { background: #e8f5e9; color: #2e7d32; }
+
+        /* ===== 快捷方式 tiles ===== */
+        .shortcut-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+            gap: 10px;
+        }
+        .tile {
+            position: relative;
+            background: #e3f2fd;
+            border-radius: 10px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            text-align: center;
+            cursor: pointer;
+            border: 1px solid #bbdefb;
+            padding: 12px 8px;
+            transition: transform 0.13s;
+            min-height: 80px;
+            container-type: inline-size;
+        }
+        .tile:active { transform: scale(0.95); }
+        .tile-icon { font-size: clamp(28px, 35cqw, 60px); margin-bottom: clamp(6px, 8cqw, 14px); line-height: 1; }
+        .tile-name { font-weight: bold; font-size: clamp(0.85rem, 15cqw, 1.4rem); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; width: 100%; }
+        .tile-del { position: absolute; top: 4px; right: 4px; color: #ff5252; padding: 4px; font-size: 16px; line-height: 1; z-index: 10; background: rgba(255,255,255,0.7); border-radius: 50%; opacity: 0.8; }
+        
+        .icon-selector { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+        .icon-option { font-size: 26px; padding: 6px 8px; border-radius: 8px; cursor: pointer; border: 2px solid transparent; transition: 0.2s; user-select: none; }
+        .icon-option:hover { background: #f0f0f0; }
+        .icon-option.selected { border-color: #2196F3; background: #e3f2fd; }
+
+        /* ===== 播放记录 ===== */
+        .history-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-radius: 8px; background: #f8f9fa; margin-bottom: 6px; cursor: pointer; }
+        .history-item:last-child { margin-bottom: 0; }
+
+        /* ===== 设置模式：正常滚动布局 ===== */
+        body.settings-mode {
+            min-height: 100vh;
+            padding: 65px 15px 15px;
+            overflow-y: auto;
+            gap: 15px;
+        }
+        body.settings-mode .shortcuts-card { }
+        body.settings-mode .history-panel { }
+
+        /* ===== 使用模式：充满视口布局 ===== */
+        body.use-mode {
+            height: 100vh;
+            overflow: hidden;
+            padding-top: 50px;          /* 顶部栏高度 */
+            padding-bottom: 0;
+        }
+
+        /* 快捷区块：弹性撑满中间 */
+        body.use-mode .shortcuts-card {
+            flex: 1;
+            min-height: 0;              /* 允许 flex 子项收缩 */
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            margin: 10px 10px 0;
+            border-radius: 12px 12px 0 0;
+        }
+        body.use-mode .shortcuts-card h2 { flex: 0 0 auto; }
+        body.use-mode .shortcut-grid {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            align-content: start;       /* 避免竖直方向被无限拉伸 */
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+            gap: 15px;
+            padding: 5px;
+        }
+        body.use-mode .tile { 
+            height: auto; 
+            min-height: unset;
+            aspect-ratio: 1 / 1;        /* 保持正方形 */
+            justify-content: center;
+        }
+
+        /* 使用模式隐藏的元素 */
+        body.use-mode .settings-only { display: none !important; }
+        body.use-mode .tile-del { display: none; }
+
+        /* 播放记录：固定在底部 */
+        body.use-mode .history-panel {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            z-index: 100;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            box-shadow: 0 -4px 16px rgba(0,0,0,0.1);
+            padding: 10px 10px 10px;
+            max-height: 38vh;
+            overflow-y: auto;
+        }
+        /* 快捷卡补偿底部历史面板的高度 */
+        body.use-mode .shortcuts-card {
+            /* JS 动态设置 padding-bottom */
+        }
     </style>
 </head>
-<body>
-    <div class="card">
-        <h2>📺 设备选择</h2>
+<body class="use-mode">
+    <!-- 顶部固定栏 -->
+    <div class="top-bar">
+        <div class="top-bar-title">📺 Dollop Cast</div>
+        <button class="mode-toggle" id="mode-btn" onclick="toggleMode()"></button>
+    </div>
+
+    <!-- 设置模式专属：设备选择 -->
+    <div class="card settings-only" id="device-card">
+        <h2>📡 设备选择</h2>
         <div id="device-list"></div>
     </div>
-    <div class="card">
+
+    <!-- 快捷方式（两种模式都显示） -->
+    <div class="card shortcuts-card" id="shortcuts-card">
         <h2>⭐ 快捷控制</h2>
         <div class="shortcut-grid" id="shortcut-grid"></div>
-        <div style="margin-top:15px; border-top:1px solid #eee; padding-top:15px;">
+        <!-- 设置模式专属：添加表单 -->
+        <div class="settings-only" style="margin-top:15px; border-top:1px solid #eee; padding-top:15px;">
+            <div class="icon-selector" id="icon-selector">
+                <span class="icon-option selected" onclick="selectIcon(this, '📁')">📁</span>
+                <span class="icon-option" onclick="selectIcon(this, '📄')">📄</span>
+                <span class="icon-option" onclick="selectIcon(this, '🌐')">🌐</span>
+                <span class="icon-option" onclick="selectIcon(this, '👦')">👦</span>
+                <span class="icon-option" onclick="selectIcon(this, '🧓')">🧓</span>
+                <span class="icon-option" onclick="selectIcon(this, '🎬')">🎬</span>
+                <span class="icon-option" onclick="selectIcon(this, '🦄')">🦄</span>
+                <span class="icon-option" onclick="selectIcon(this, '🎵')">🎵</span>
+                <span class="icon-option" onclick="selectIcon(this, '🎮')">🎮</span>
+                <span class="icon-option" onclick="selectIcon(this, '📺')">📺</span>
+            </div>
             <input type="text" id="sc-name" placeholder="起个名字">
             <input type="text" id="sc-path" placeholder="URL 或 本地路径">
             <button class="btn btn-small" onclick="browse('file')">📂 浏览文件</button>
@@ -342,38 +482,89 @@ WEB_UI_HTML = """
             <button class="btn" onclick="addSC()">添加</button>
         </div>
     </div>
-    <div class="card">
-        <h2>📜 播放记录 (自动续播)</h2>
+
+    <!-- 播放记录 -->
+    <div class="history-panel" id="history-panel">
+        <h2 style="margin-bottom:10px;">📜 播放记录 <small style="font-size:0.72rem;font-weight:normal;color:#888;margin-left:4px;">自动续播</small></h2>
         <div id="history-list"></div>
     </div>
+
     <script>
+        // ===== 模式切换 =====
+        let useMode = localStorage.getItem('dollop_mode') !== 'settings';
+        function applyMode() {
+            if (useMode) {
+                document.body.className = 'use-mode';
+                document.getElementById('mode-btn').textContent = '⚙️ 设置模式';
+                document.getElementById('mode-btn').className = 'mode-toggle settings';
+                adjustLayout();
+            } else {
+                document.body.className = 'settings-mode';
+                document.getElementById('mode-btn').textContent = '▶ 使用模式';
+                document.getElementById('mode-btn').className = 'mode-toggle use';
+                document.getElementById('shortcuts-card').style.paddingBottom = '';
+            }
+        }
+        function toggleMode() {
+            useMode = !useMode;
+            localStorage.setItem('dollop_mode', useMode ? 'use' : 'settings');
+            applyMode();
+        }
+
+        // 使用模式下：让快捷卡片底部留出播放记录面板的高度
+        function adjustLayout() {
+            if (!useMode) return;
+            const hp = document.getElementById('history-panel');
+            const hh = hp.offsetHeight;
+            // 快捷卡的外部容器加 margin-bottom 避免被遮挡
+            const sc = document.getElementById('shortcuts-card');
+            sc.style.marginBottom = hh + 'px';
+        }
+
+        applyMode();
+        window.addEventListener('resize', adjustLayout);
+
+        let selectedIcon = '📁';
+        function selectIcon(el, icon) {
+            document.querySelectorAll('.icon-option').forEach(n => n.classList.remove('selected'));
+            el.classList.add('selected');
+            selectedIcon = icon;
+        }
+
+        // ===== 数据刷新 =====
         async function fetchStatus() {
             const res = await fetch('/api/status');
             const data = await res.json();
-            document.getElementById('device-list').innerHTML = data.devices.map(d => `<div class="device-item ${d === data.selected_device ? 'active' : ''}" onclick="selectDevice('${d}')"><span>${d}</span><small>${d === data.selected_device ? '✅ 已选' : ''}</small></div>`).join('');
+            // 设备列表
+            document.getElementById('device-list').innerHTML = data.devices.map(d =>
+                `<div class="device-item ${d === data.selected_device ? 'active' : ''}" onclick="selectDevice('${d}')"><span>${d}</span><small>${d === data.selected_device ? '✅ 已选' : '选择'}</small></div>`
+            ).join('') || '<div style="color:#aaa;text-align:center;padding:10px;">未发现设备，请等待扫描…</div>';
+            // 快捷方式
             document.getElementById('shortcut-grid').innerHTML = data.shortcuts.map((s, i) => {
                 const safePath = encodeURIComponent(s.path);
                 const safeName = encodeURIComponent(s.name);
-                const icon = s.path.startsWith('http') ? '🌐' : (s.path.includes('.') ? '📄' : '📁');
-                return `<div class="tile" data-path="${safePath}" data-name="${safeName}" data-idx="${i}" onclick="castShortcut(this)"><span class="tile-del" onclick="event.stopPropagation(); delSC(${i})">×</span><div class="tile-icon">${icon}</div><div class="tile-name">${s.name}</div></div>`;
-            }).join('');
-            const hArray = Object.entries(data.history).sort((a,b) => b[1].time - a[1].time).slice(0, 5);
-            // 用 data-* 属性存储，避免路径/名称中的特殊字符破坏 onclick 字符串
-            document.getElementById('history-list').innerHTML = hArray.map(([url, h], i) => {
+                const icon = s.icon || (s.path.startsWith('http') ? '🌐' : (s.path.includes('.') ? '📄' : '📁'));
+                return `<div class="tile" data-path="${safePath}" data-name="${safeName}" onclick="castShortcut(this)"><span class="tile-del" onclick="event.stopPropagation();delSC(${i})">×</span><div class="tile-icon">${icon}</div><div class="tile-name">${s.name}</div></div>`;
+            }).join('') || '<div style="color:#aaa;font-size:0.9rem;padding:10px 0;">暂无快捷方式，切换到设置模式添加</div>';
+            // 播放记录
+            const hArray = Object.entries(data.history).sort((a,b) => b[1].time - a[1].time).slice(0, 8);
+            document.getElementById('history-list').innerHTML = hArray.map(([url, h]) => {
                 const safeUrl = encodeURIComponent(url);
                 const safeName = encodeURIComponent(h.name);
-                return `<div class="device-item" data-url="${safeUrl}" data-name="${safeName}" onclick="castFromHistory(this)"><div><b>${h.name}</b><br><small>进度: ${h.pos}</small></div><span>续播 ▶</span></div>`;
-            }).join('') || '无记录';
+                return `<div class="history-item" data-url="${safeUrl}" data-name="${safeName}" onclick="castFromHistory(this)"><div><b>${h.name}</b><br><small style="color:#888;">进度: ${h.pos}</small></div><span style="color:#2196F3;font-weight:bold;white-space:nowrap;margin-left:8px;">▶ 续播</span></div>`;
+            }).join('') || '<div style="color:#aaa;text-align:center;padding:8px;">暂无记录</div>';
+            // 使用模式时重新计算布局（记录条数变化会影响面板高度）
+            if (useMode) setTimeout(adjustLayout, 50);
         }
+
         async function browse(type) { const res = await fetch('/api/browse/' + type); const data = await res.json(); if(data.path) document.getElementById('sc-path').value = data.path; }
-        // 快捷方式点击：统一走 /api/cast，后端自动区分文件/文件夹/URL 并续播
         async function castShortcut(el) {
             const path = decodeURIComponent(el.dataset.path);
             const name = decodeURIComponent(el.dataset.name);
             await fetch('/api/cast', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: path, name}) });
             fetchStatus();
         }
-        async function addSC() { const name = document.getElementById('sc-name').value; const path = document.getElementById('sc-path').value; if(!name||!path) return; await fetch('/api/shortcuts', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name, path}) }); document.getElementById('sc-name').value=''; document.getElementById('sc-path').value=''; fetchStatus(); }
+        async function addSC() { const name = document.getElementById('sc-name').value; const path = document.getElementById('sc-path').value; if(!name||!path) return; await fetch('/api/shortcuts', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name, path, icon: selectedIcon}) }); document.getElementById('sc-name').value=''; document.getElementById('sc-path').value=''; fetchStatus(); }
         async function delSC(i) { await fetch('/api/shortcuts/delete', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({index: i}) }); fetchStatus(); }
         async function selectDevice(n) { await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({selected_device: n}) }); fetchStatus(); }
         async function cast(u, n) { await fetch('/api/cast', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: u, name: n}) }); fetchStatus(); }

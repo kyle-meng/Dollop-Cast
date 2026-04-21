@@ -1,14 +1,12 @@
 [
   {
-    "name": "儿童",
-    "path": "data/"
+    "name": "猫和老鼠",
+    "path": "/home/meng/alist-mount/HDD/USB/download/猫和老鼠 旧版",
+    "icon": "👦"
   },
   {
-    "name": "test",
-    "path": "/home/meng/alist-mount/HDD/USB/download/【有声中文动画】Hey-Duggee 嗨道奇狗狗老师【第二季】"
-  },
-  {
-    "name": "点击",
-    "path": "/home/meng/alist-mount/HDD/USB/download/电锯人"
+    "name": "电视剧",
+    "path": "/home/meng/alist-mount/HDD/USB/download/猫和老鼠 旧版",
+    "icon": "📺"
   }
 ]
