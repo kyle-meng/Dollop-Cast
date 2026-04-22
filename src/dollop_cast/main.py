@@ -11,10 +11,11 @@ from urllib.parse import urlparse, quote
 from collections import OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, send_file, render_template_string
 from flask_cors import CORS
-from stream_proxy import proxy_bp
+from .stream_proxy import proxy_bp
 
 # --- 配置与存储 ---
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 
 HISTORY_FILE = os.path.join(DATA_DIR, 'history.json')
@@ -36,7 +37,11 @@ _cfg = load_json(CONFIG_FILE, {})
 MEDIA_ROOT = _cfg.get('media_root', os.path.expanduser('~'))
 ENABLE_PROXY = _cfg.get('proxy', True)
 LOCAL_DEBUG_MODE = _cfg.get('debug', False)
+SKIP_ENDING_SECONDS = _cfg.get('skip_ending', 20)
+SKIP_START_SECONDS = _cfg.get('skip_start', 0)
+
 SERVER_PORT = _cfg.get('server_port', 5000)
+
 
 # --- 全局状态 ---
 found_devices = OrderedDict()
@@ -140,25 +145,65 @@ def update_history_pos(url, pos):
         history[url]['time'] = time.time()
         save_json(HISTORY_FILE, history)
 
+def _trigger_next_episode(current_target):
+    if not current_target or current_target.startswith('http'): return
+    if os.path.isfile(current_target):
+        folder = os.path.dirname(current_target)
+        filename = os.path.basename(current_target)
+        try:
+            files = [f for f in os.listdir(folder) if f.lower().endswith(('.mp4', '.mkv', '.avi', '.ts', '.mov', '.flv'))]
+            files.sort()
+            idx = files.index(filename)
+            if idx + 1 < len(files):
+                next_file = files[idx + 1]
+                next_path = os.path.join(folder, next_file)
+                print(f"[*] 电视播放完毕，自动投屏播下一集: {next_file}")
+                requests.post(f"http://127.0.0.1:{SERVER_PORT}/api/cast", json={"url": next_path, "name": next_file}, timeout=5)
+        except: pass
+
 def position_polling_loop():
-    """后台轮询电视当前的播放进度"""
+    """后台轮询电视当前的播放进度并检查自动下一集"""
     global current_playing_url, current_control_url
+    
+    def time_to_sec(t_str):
+        try: return sum(x * int(t) for x, t in zip([3600, 60, 1], str(t_str).split(":")))
+        except: return 0
+
+    last_url = None
+    last_rel_sec = 0
+    last_dur_sec = 0
+
     while True:
         if current_control_url and current_playing_url:
             try:
                 headers = {'Content-Type': 'text/xml; charset="utf-8"', 'SOAPACTION': '"urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo"'}
                 body = '<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetPositionInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>0</InstanceID></u:GetPositionInfo></s:Body></s:Envelope>'
                 resp = requests.post(current_control_url, data=body, headers=headers, timeout=3)
+                
                 if resp.status_code == 200:
-                    # 使用正则或简单解析获取 RelTime
                     content = resp.text
                     start = content.find("<RelTime>") + 9
                     end = content.find("</RelTime>")
+                    dur_start = content.find("<TrackDuration>") + 15
+                    dur_end = content.find("</TrackDuration>")
+                    
                     if start > 8 and end > start:
                         rel_time = content[start:end]
-                        # 只有大于 00:00:00 才记录
-                        if rel_time != "00:00:00" and "NOT_IMPLEMENTED" not in rel_time:
-                            update_history_pos(current_playing_url, rel_time)
+                        if dur_start > 14 and dur_end > dur_start:
+                            dur_time = content[dur_start:dur_end]
+                            dur_sec = time_to_sec(dur_time)
+                            rel_sec = time_to_sec(rel_time)
+
+                            if rel_time != "00:00:00" and "NOT_IMPLEMENTED" not in rel_time:
+                                update_history_pos(current_playing_url, rel_time)
+
+                                # 宽松距离阈值匹配：跳过片尾逻辑，距离末尾小于 SKIP_ENDING_SECONDS 则立刻播下一集
+                                if dur_sec > 0 and (dur_sec - rel_sec) <= SKIP_ENDING_SECONDS:
+                                    _trigger_next = current_playing_url
+                                    current_playing_url = None # 防止重复触发
+                                    threading.Thread(target=lambda: _trigger_next_episode(_trigger_next)).start()
+                                    time.sleep(2)
+                                    continue
             except: pass
         time.sleep(5)
 
@@ -178,7 +223,7 @@ LOCAL_IP = get_local_ip()
 
 @app.route('/')
 def index():
-    return render_template_string(WEB_UI_HTML, local_ip=LOCAL_IP, port=SERVER_PORT)
+    return render_template_string(WEB_UI_HTML, local_ip=LOCAL_IP, port=SERVER_PORT, skip_ending=SKIP_ENDING_SECONDS, skip_start=SKIP_START_SECONDS)
 
 @app.route('/api/status')
 def get_status():
@@ -187,10 +232,84 @@ def get_status():
         "selected_device": selected_device_name,
         "proxy": ENABLE_PROXY,
         "debug": LOCAL_DEBUG_MODE,
+        "skip_ending": SKIP_ENDING_SECONDS,
+        "skip_start": SKIP_START_SECONDS,
         "media_root": MEDIA_ROOT,
         "history": load_json(HISTORY_FILE, {}),
         "shortcuts": load_json(SHORTCUTS_FILE, [])
     })
+
+@app.route('/api/stream_local')
+def stream_local():
+    path = request.args.get('path', '')
+    if not path or not os.path.exists(path):
+        return "Not found", 404
+    # Simple security scope check
+    global MEDIA_ROOT
+    if not os.path.normpath(path).startswith(os.path.normpath(MEDIA_ROOT)):
+        return "Access denied", 403
+    return send_file(path, conditional=True)
+
+@app.route('/api/history', methods=['POST'])
+def update_history_api():
+    data = request.json
+    url = data.get('url')
+    name = data.get('name')
+    sec = data.get('pos_seconds', 0)
+    hh = int(sec) // 3600
+    mm = (int(sec) % 3600) // 60
+    ss = int(sec) % 60
+    pos_str = f"{hh:02}:{mm:02}:{ss:02}"
+    hist = load_json(HISTORY_FILE, {})
+    hist[url] = {
+        "name": name,
+        "pos": pos_str,
+        "time": time.time()
+    }
+    save_json(HISTORY_FILE, hist)
+    return jsonify({"status": "ok"})
+
+@app.route('/api/next_episode', methods=['POST'])
+def get_next_episode():
+    target = request.json.get('url')
+    if not target or target.startswith('http'):
+        return jsonify({"status": "error", "msg": "不支持的网络流"})
+    if os.path.isfile(target):
+        folder = os.path.dirname(target)
+        filename = os.path.basename(target)
+        try:
+            files = [f for f in os.listdir(folder) if f.lower().endswith(('.mp4', '.mkv', '.avi', '.ts', '.mov', '.flv'))]
+            files.sort()
+            idx = files.index(filename)
+            if idx + 1 < len(files):
+                next_file = files[idx + 1]
+                next_path = os.path.join(folder, next_file)
+                return jsonify({"status": "ok", "url": next_path, "name": next_file})
+        except: pass
+    return jsonify({"status": "error", "msg": "已经是最后一集或无本地文件"})
+
+@app.route('/api/resolve', methods=['POST'])
+def resolve_playable():
+    """将给定的目标（文件或文件夹）解析为确切的视频文件信息（供本地/投屏通用）"""
+    data = request.json
+    target = data.get('url')
+    name = data.get('name', target)
+    if os.path.exists(target) and os.path.isdir(target):
+        files = [f for f in os.listdir(target) if f.lower().endswith(('.mp4', '.mkv', '.avi', '.ts', '.mov', '.flv'))]
+        files.sort()
+        if not files:
+            return jsonify({"status": "error", "msg": "文件夹内无视频"}), 404
+        target_file = files[0]
+        history = load_json(HISTORY_FILE, {})
+        latest_time = 0
+        for f in files:
+            full_p = os.path.join(target, f)
+            if full_p in history and history[full_p]['time'] > latest_time:
+                latest_time = history[full_p]['time']
+                target_file = f
+        target = os.path.join(target, target_file)
+        name = target_file
+    return jsonify({"status": "ok", "url": target, "name": name})
 
 @app.route('/api/files')
 def list_files():
@@ -224,7 +343,7 @@ def list_files():
 
 @app.route('/api/config', methods=['POST'])
 def update_config():
-    global ENABLE_PROXY, LOCAL_DEBUG_MODE, MEDIA_ROOT
+    global ENABLE_PROXY, LOCAL_DEBUG_MODE, MEDIA_ROOT, SKIP_ENDING_SECONDS, SKIP_START_SECONDS
     data = request.json
     cfg = load_json(CONFIG_FILE, {})
     dirty = False
@@ -237,6 +356,20 @@ def update_config():
         LOCAL_DEBUG_MODE = data['debug']
         cfg['debug'] = LOCAL_DEBUG_MODE
         dirty = True
+    if 'skip_ending' in data:
+        try:
+            val = int(data['skip_ending'])
+            SKIP_ENDING_SECONDS = val
+            cfg['skip_ending'] = val
+            dirty = True
+        except: pass
+    if 'skip_start' in data:
+        try:
+            val = int(data['skip_start'])
+            SKIP_START_SECONDS = val
+            cfg['skip_start'] = val
+            dirty = True
+        except: pass
 
     if 'selected_device' in data: 
         select_device(data['selected_device'])
@@ -283,6 +416,10 @@ def cast_endpoint():
     # 记录/读取历史：每次播放都更新时间戳，保留已有进度
     history = load_json(HISTORY_FILE, {})
     existing_pos = history.get(target, {}).get('pos', '00:00:00')
+    
+    if existing_pos == '00:00:00' and SKIP_START_SECONDS > 0:
+        existing_pos = f"{SKIP_START_SECONDS//3600:02d}:{(SKIP_START_SECONDS%3600)//60:02d}:{SKIP_START_SECONDS%60:02d}"
+
     history[target] = {"name": name, "pos": existing_pos, "time": time.time()}
     save_json(HISTORY_FILE, history)
 
@@ -330,6 +467,9 @@ def _cast_folder_impl(folder_path):
     current_playing_url = full_path
     current_playing_name = target_file
     last_pos = history.get(full_path, {}).get('pos', '00:00:00')
+    
+    if last_pos == '00:00:00' and SKIP_START_SECONDS > 0:
+        last_pos = f"{SKIP_START_SECONDS//3600:02d}:{(SKIP_START_SECONDS%3600)//60:02d}:{SKIP_START_SECONDS%60:02d}"
 
     # 写入/更新历史记录
     history[full_path] = {"name": target_file, "pos": last_pos, "time": time.time()}
@@ -429,6 +569,16 @@ WEB_UI_HTML = """
         }
         .btn-browse:hover { background: #e3f2fd; border-color: #90caf9; }
         .btn-browse:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* ===== 开关组件 ===== */
+        .switch-box { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .switch-label { font-size: 1.05rem; font-weight: bold; }
+        .switch { position: relative; display: inline-block; width: 50px; height: 28px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 28px; }
+        .slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: #2196F3; }
+        input:checked + .slider:before { transform: translateX(22px); }
 
         /* ===== 文件选择器弹窗 ===== */
         .picker-overlay {
@@ -549,6 +699,35 @@ WEB_UI_HTML = """
         <div id="device-list"></div>
     </div>
 
+    <!-- 设置模式专属：系统设定 -->
+    <div class="card settings-only" id="system-settings-card">
+        <h2>⚙️ 系统设定</h2>
+        <div style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">
+            <div class="switch-box" style="margin-bottom:0px;">
+                <div class="switch-label" style="font-size: 1rem; font-weight: normal;">启用流媒体代理解析 (推荐)</div>
+                <label class="switch">
+                    <input type="checkbox" id="setting-proxy" onchange="updateSettings()">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="switch-box" style="margin-bottom:0px;">
+                <div class="switch-label" style="font-size: 1rem; font-weight: normal;">启用本地调试模式</div>
+                <label class="switch">
+                    <input type="checkbox" id="setting-debug" onchange="updateSettings()">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <label style="display:flex; align-items:center; margin-top:5px;">
+                <span style="width: 130px;">跳过片头秒数:</span>
+                <input type="number" id="setting-skip-start" onchange="updateSettings()" style="width:60px; padding:4px;" min="0">
+            </label>
+            <label style="display:flex; align-items:center;">
+                <span style="width: 130px;">跳过片尾秒数:</span>
+                <input type="number" id="setting-skip" onchange="updateSettings()" style="width:60px; padding:4px;" min="0">
+            </label>
+        </div>
+    </div>
+
     <!-- 快捷方式（两种模式都显示） -->
     <div class="card shortcuts-card" id="shortcuts-card">
         <h2>⭐ 快捷控制</h2>
@@ -588,8 +767,26 @@ WEB_UI_HTML = """
 
     <!-- 播放记录 -->
     <div class="history-panel" id="history-panel">
+        <div class="switch-box use-only" style="margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:8px;">
+            <div class="switch-label">📺 设备投放 <small style="color:#888; font-weight:normal; display:block; font-size:0.8rem; margin-top:2px;">开启投屏，关闭则在网页本地播放</small></div>
+            <label class="switch">
+                <input type="checkbox" id="cast-toggle" onchange="toggleCastMode()">
+                <span class="slider"></span>
+            </label>
+        </div>
         <h2 style="margin-bottom:10px;">📜 播放记录 <small style="font-size:0.72rem;font-weight:normal;color:#888;margin-left:4px;">自动续播</small></h2>
         <div id="history-list"></div>
+    </div>
+
+    <!-- WEB 播放器弹窗 -->
+    <div class="picker-overlay" id="player-overlay" style="z-index: 999; flex-direction: column; background: black;">
+        <div style="width:100%; display:flex; justify-content:space-between; align-items:center; padding:15px; color:white; flex-shrink:0;">
+            <div id="player-title" style="font-weight:bold; font-size:1.1rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width: 80%;">Video Title</div>
+            <button onclick="closePlayer()" style="background:none; border:none; color:white; font-size:28px; cursor:pointer; padding: 0 10px;">✕</button>
+        </div>
+        <div style="flex:1; width:100%; display:flex; justify-content:center; align-items:center;">
+            <video id="web-video-player" controls autoplay onended="playNextWebVideo()" style="max-width:100%; max-height:100%; width:100%; outline: none;"></video>
+        </div>
     </div>
 
     <!-- 文件选择器弹窗 -->
@@ -647,10 +844,22 @@ WEB_UI_HTML = """
             selectedIcon = icon;
         }
 
+        let appHistory = {};
+
         // ===== 数据刷新 =====
         async function fetchStatus() {
             const res = await fetch('/api/status');
             const data = await res.json();
+            
+            appHistory = data.history;
+
+            if (document.getElementById('setting-proxy')) {
+                document.getElementById('setting-proxy').checked = data.proxy;
+                document.getElementById('setting-debug').checked = data.debug;
+                document.getElementById('setting-skip-start').value = data.skip_start;
+                document.getElementById('setting-skip').value = data.skip_ending;
+            }
+
             // 设备列表
             document.getElementById('device-list').innerHTML = data.devices.map(d =>
                 `<div class="device-item ${d === data.selected_device ? 'active' : ''}" onclick="selectDevice('${d}')"><span>${d}</span><small>${d === data.selected_device ? '✅ 已选' : '选择'}</small></div>`
@@ -757,24 +966,131 @@ WEB_UI_HTML = """
             else { hint.style.color='#d32f2f'; hint.textContent='❌ ' + (data.msg||'失败'); }
         }
 
-        async function castShortcut(el) {
-            const path = decodeURIComponent(el.dataset.path);
-            const name = decodeURIComponent(el.dataset.name);
-            await fetch('/api/cast', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: path, name}) });
-            fetchStatus();
+        // ===== 本地播放/投放逻辑 =====
+        let isCastEnabled = localStorage.getItem('cast_enabled') !== 'false';
+        document.getElementById('cast-toggle').checked = isCastEnabled;
+
+        function toggleCastMode() {
+            isCastEnabled = document.getElementById('cast-toggle').checked;
+            localStorage.setItem('cast_enabled', isCastEnabled);
         }
+
+        async function playVideo(path, name) {
+            try {
+                const rRes = await fetch('/api/resolve', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: path, name: name}) });
+                const rData = await rRes.json();
+                if (rData.status !== 'ok') { alert(rData.msg || "解析失败"); return; }
+                path = rData.url;
+                name = rData.name;
+            } catch(e) { }
+
+            if (isCastEnabled) {
+                await fetch('/api/cast', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: path, name}) });
+                fetchStatus();
+            } else {
+                openWebPlayer(path, name);
+            }
+        }
+
+        let webPlayerInterval = null;
+        let activePlayerUrl = '';
+        let activePlayerName = '';
+
+        function openWebPlayer(path, name) {
+            activePlayerUrl = path;
+            activePlayerName = name;
+            const overlay = document.getElementById('player-overlay');
+            const video = document.getElementById('web-video-player');
+            document.getElementById('player-title').textContent = name;
+            
+            let videoSrc = path;
+            if (!path.startsWith('http')) {
+                videoSrc = '/api/stream_local?path=' + encodeURIComponent(path);
+            }
+            video.src = videoSrc;
+            
+            // 恢复进度
+            if (appHistory[path] && appHistory[path].pos && appHistory[path].pos !== '00:00:00') {
+                const parts = appHistory[path].pos.split(':').reverse();
+                let seconds = 0;
+                for (let i = 0; i < parts.length; i++) seconds += parseInt(parts[i] || 0) * Math.pow(60, i);
+                if (seconds > 0) video.currentTime = seconds;
+            } else if ({{skip_start}} > 0) {
+                video.currentTime = {{skip_start}};
+            }
+            overlay.classList.add('open');
+            video.play();
+
+            video.dataset.nextTriggered = "0";
+            video.ontimeupdate = () => {
+                if (video.duration && (video.duration - video.currentTime <= {{skip_ending}})) {
+                    if (video.dataset.nextTriggered !== "1") {
+                        video.dataset.nextTriggered = "1";
+                        playNextWebVideo();
+                    }
+                }
+            };
+
+            // 定时记录历史
+            if(webPlayerInterval) clearInterval(webPlayerInterval);
+            webPlayerInterval = setInterval(() => {
+                if(!video.paused) {
+                    fetch('/api/history', { method:'POST', headers:{'Content-Type':'application/json'}, 
+                        body: JSON.stringify({url: activePlayerUrl, name: activePlayerName, pos_seconds: video.currentTime}) 
+                    });
+                }
+            }, 5000);
+        }
+
+        function closePlayer() {
+            const video = document.getElementById('web-video-player');
+            video.pause();
+            if(webPlayerInterval) clearInterval(webPlayerInterval);
+            fetch('/api/history', { method:'POST', headers:{'Content-Type':'application/json'}, 
+                body: JSON.stringify({url: activePlayerUrl, name: activePlayerName, pos_seconds: video.currentTime}) 
+            }).then(() => fetchStatus()); // 最后更新一次
+            video.src = '';
+            document.getElementById('player-overlay').classList.remove('open');
+        }
+
+        async function playNextWebVideo() {
+            if (!activePlayerUrl) return;
+            const res = await fetch('/api/next_episode', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: activePlayerUrl}) });
+            const data = await res.json();
+            if (data.status === 'ok') {
+                playVideo(data.url, data.name);
+            } else {
+                closePlayer();
+            }
+        }
+
+        async function castShortcut(el) { playVideo(decodeURIComponent(el.dataset.path), decodeURIComponent(el.dataset.name)); }
+        async function castFromHistory(el) { playVideo(decodeURIComponent(el.dataset.url), decodeURIComponent(el.dataset.name)); }
+
         async function addSC() { const name = document.getElementById('sc-name').value; const path = document.getElementById('sc-path').value; if(!name||!path) return; await fetch('/api/shortcuts', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name, path, icon: selectedIcon}) }); document.getElementById('sc-name').value=''; document.getElementById('sc-path').value=''; fetchStatus(); }
         async function delSC(i) { await fetch('/api/shortcuts/delete', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({index: i}) }); fetchStatus(); }
         async function selectDevice(n) { await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({selected_device: n}) }); fetchStatus(); }
-        async function cast(u, n) { await fetch('/api/cast', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: u, name: n}) }); fetchStatus(); }
-        async function castFromHistory(el) { const u = decodeURIComponent(el.dataset.url); const n = decodeURIComponent(el.dataset.name); await cast(u, n); }
+        
+        async function updateSettings() {
+            const proxy = document.getElementById('setting-proxy').checked;
+            const debug = document.getElementById('setting-debug').checked;
+            const skip_start = parseInt(document.getElementById('setting-skip-start').value) || 0;
+            const skip_end = parseInt(document.getElementById('setting-skip').value) || 0;
+            await fetch('/api/config', { 
+                method: 'POST', 
+                headers: {'Content-Type': 'application/json'}, 
+                body: JSON.stringify({proxy: proxy, debug: debug, skip_start: skip_start, skip_ending: skip_end}) 
+            });
+            fetchStatus();
+        }
+
         fetchStatus(); setInterval(fetchStatus, 5000);
     </script>
 </body>
 </html>
 """
 
-def main():
+def run_server():
     print("=======================================")
     print("📺 Dollop Cast 影音控制中心已启动")
     print(f"🔗 管理地址: http://{LOCAL_IP}:{SERVER_PORT}")
@@ -786,4 +1102,4 @@ def main():
     serve(app, host='0.0.0.0', port=SERVER_PORT)
 
 if __name__ == '__main__':
-    main()
+    run_server()

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dollop-cast"
+version = "0.1.0"
+description = "A powerful, headless, web-first DLNA media control center and local player."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "CC-BY-NC-SA-4.0"
+dependencies = [
+    "Flask>=2.0.0",
+    "waitress>=2.1.2",
+    "requests>=2.25.0",
+    "flask-cors>=3.0.10"
+]
+
+[project.urls]
+Homepage = "https://github.com/kyle-meng/Dollop-Cast"
+
+[project.scripts]
+dollop-cast = "dollop_cast.main:run_server"
