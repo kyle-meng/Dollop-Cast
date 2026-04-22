@@ -1,4 +1,3 @@
-import webbrowser
 import os
 import sys
 import threading
@@ -7,18 +6,14 @@ import socket
 import requests
 import uuid
 import json
-import tkinter as tk
-from tkinter import filedialog, messagebox
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse, quote
 from collections import OrderedDict
 from flask import Flask, request, jsonify, send_from_directory, send_file, render_template_string
 from flask_cors import CORS
-import yt_dlp
 from stream_proxy import proxy_bp
 
 # --- 配置与存储 ---
-SERVER_PORT = 5000
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 
@@ -36,16 +31,17 @@ def load_json(path, default):
 def save_json(path, data):
     with open(path, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
-# 从持久化配置加载媒体根目录
+# 从持久化配置加载
 _cfg = load_json(CONFIG_FILE, {})
 MEDIA_ROOT = _cfg.get('media_root', os.path.expanduser('~'))
+ENABLE_PROXY = _cfg.get('proxy', True)
+LOCAL_DEBUG_MODE = _cfg.get('debug', False)
+SERVER_PORT = _cfg.get('server_port', 5000)
 
 # --- 全局状态 ---
 found_devices = OrderedDict()
 selected_device_name = None
 current_control_url = None
-ENABLE_PROXY = True
-LOCAL_DEBUG_MODE = False
 local_files_map = {}
 current_playing_url = None
 current_playing_name = "未知视频"
@@ -230,18 +226,32 @@ def list_files():
 def update_config():
     global ENABLE_PROXY, LOCAL_DEBUG_MODE, MEDIA_ROOT
     data = request.json
-    if 'proxy' in data: ENABLE_PROXY = data['proxy']
-    if 'debug' in data: LOCAL_DEBUG_MODE = data['debug']
-    if 'selected_device' in data: select_device(data['selected_device'])
+    cfg = load_json(CONFIG_FILE, {})
+    dirty = False
+
+    if 'proxy' in data: 
+        ENABLE_PROXY = data['proxy']
+        cfg['proxy'] = ENABLE_PROXY
+        dirty = True
+    if 'debug' in data: 
+        LOCAL_DEBUG_MODE = data['debug']
+        cfg['debug'] = LOCAL_DEBUG_MODE
+        dirty = True
+
+    if 'selected_device' in data: 
+        select_device(data['selected_device'])
+
     if 'media_root' in data:
         new_root = data['media_root'].strip()
         if os.path.isdir(new_root):
             MEDIA_ROOT = new_root
-            cfg = load_json(CONFIG_FILE, {})
             cfg['media_root'] = MEDIA_ROOT
-            save_json(CONFIG_FILE, cfg)
+            dirty = True
         else:
             return jsonify({'status': 'error', 'msg': '路径不存在'}), 400
+
+    if dirty:
+        save_json(CONFIG_FILE, cfg)
     return jsonify({"status": "ok"})
 
 @app.route('/api/shortcuts', methods=['POST'])
@@ -765,14 +775,15 @@ WEB_UI_HTML = """
 """
 
 def main():
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False), daemon=True).start()
+    print("=======================================")
+    print("📺 Dollop Cast 影音控制中心已启动")
+    print(f"🔗 管理地址: http://{LOCAL_IP}:{SERVER_PORT}")
+    print("=======================================")
     threading.Thread(target=scan_devices_loop, daemon=True).start()
     threading.Thread(target=position_polling_loop, daemon=True).start()
-    root = tk.Tk(); root.title("Dollop Cast Server"); root.geometry("300x150")
-    tk.Label(root, text="影音控制中心已启动", font=("Arial", 10, "bold")).pack(pady=10)
-    tk.Label(root, text=f"管理地址: http://{LOCAL_IP}:5000").pack()
-    tk.Button(root, text="打开管理面板", command=lambda: webbrowser.open(f"http://localhost:5000")).pack(pady=15)
-    root.mainloop()
+    from waitress import serve
+    # app.run(host='0.0.0.0', port=SERVER_PORT, debug=False, use_reloader=False)
+    serve(app, host='0.0.0.0', port=SERVER_PORT)
 
 if __name__ == '__main__':
     main()
