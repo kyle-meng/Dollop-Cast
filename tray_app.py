@@ -24,6 +24,7 @@ if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 
 HISTORY_FILE = os.path.join(DATA_DIR, 'history.json')
 SHORTCUTS_FILE = os.path.join(DATA_DIR, 'shortcuts.json')
+CONFIG_FILE  = os.path.join(DATA_DIR, 'config.json')
 
 def load_json(path, default):
     if os.path.exists(path):
@@ -35,14 +36,18 @@ def load_json(path, default):
 def save_json(path, data):
     with open(path, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
+# 从持久化配置加载媒体根目录
+_cfg = load_json(CONFIG_FILE, {})
+MEDIA_ROOT = _cfg.get('media_root', os.path.expanduser('~'))
+
 # --- 全局状态 ---
 found_devices = OrderedDict()
 selected_device_name = None
 current_control_url = None
 ENABLE_PROXY = True
 LOCAL_DEBUG_MODE = False
-local_files_map = {} 
-current_playing_url = None # 当前正在电视上播放的原始 URL (用于匹配历史)
+local_files_map = {}
+current_playing_url = None
 current_playing_name = "未知视频"
 
 # --- DLNA 逻辑 ---
@@ -186,24 +191,57 @@ def get_status():
         "selected_device": selected_device_name,
         "proxy": ENABLE_PROXY,
         "debug": LOCAL_DEBUG_MODE,
+        "media_root": MEDIA_ROOT,
         "history": load_json(HISTORY_FILE, {}),
         "shortcuts": load_json(SHORTCUTS_FILE, [])
     })
 
-@app.route('/api/browse/<type>')
-def browse_local(type):
-    root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
-    path = filedialog.askopenfilename() if type == 'file' else filedialog.askdirectory()
-    root.destroy()
-    return jsonify({"path": path})
+@app.route('/api/files')
+def list_files():
+    """列出目录内容，路径被沙盒锁定在 MEDIA_ROOT 内"""
+    global MEDIA_ROOT
+    req_path = request.args.get('path', '')
+    if req_path:
+        if os.path.isabs(req_path):
+            target = os.path.normpath(req_path)
+        else:
+            target = os.path.normpath(os.path.join(MEDIA_ROOT, req_path))
+    else:
+        target = os.path.normpath(MEDIA_ROOT)
+    # 安全检查：不允许跳出 MEDIA_ROOT
+    if not target.startswith(os.path.normpath(MEDIA_ROOT)):
+        return jsonify({'error': 'access denied'}), 403
+    try:
+        entries = []
+        for name in sorted(os.listdir(target), key=lambda x: (not os.path.isdir(os.path.join(target, x)), x.lower())):
+            full = os.path.join(target, name)
+            is_dir = os.path.isdir(full)
+            if name.startswith('.'): continue   # 隐藏文件
+            if is_dir or name.lower().endswith(('.mp4', '.mkv', '.avi', '.ts', '.mov', '.m4v', '.wmv', '.flv')):
+                entries.append({'name': name, 'is_dir': is_dir, 'path': full})
+        parent = os.path.dirname(target) if os.path.normpath(target) != os.path.normpath(MEDIA_ROOT) else None
+        return jsonify({'current': target, 'parent': parent, 'root': MEDIA_ROOT, 'entries': entries})
+    except PermissionError:
+        return jsonify({'error': '无权限访问此目录'}), 403
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/config', methods=['POST'])
 def update_config():
-    global ENABLE_PROXY, LOCAL_DEBUG_MODE
+    global ENABLE_PROXY, LOCAL_DEBUG_MODE, MEDIA_ROOT
     data = request.json
     if 'proxy' in data: ENABLE_PROXY = data['proxy']
     if 'debug' in data: LOCAL_DEBUG_MODE = data['debug']
     if 'selected_device' in data: select_device(data['selected_device'])
+    if 'media_root' in data:
+        new_root = data['media_root'].strip()
+        if os.path.isdir(new_root):
+            MEDIA_ROOT = new_root
+            cfg = load_json(CONFIG_FILE, {})
+            cfg['media_root'] = MEDIA_ROOT
+            save_json(CONFIG_FILE, cfg)
+        else:
+            return jsonify({'status': 'error', 'msg': '路径不存在'}), 400
     return jsonify({"status": "ok"})
 
 @app.route('/api/shortcuts', methods=['POST'])
@@ -372,6 +410,50 @@ WEB_UI_HTML = """
         .icon-option { font-size: 26px; padding: 6px 8px; border-radius: 8px; cursor: pointer; border: 2px solid transparent; transition: 0.2s; user-select: none; }
         .icon-option:hover { background: #f0f0f0; }
         .icon-option.selected { border-color: #2196F3; background: #e3f2fd; }
+        .btn-browse { 
+            flex-shrink: 0; width: 42px; height: 42px;
+            border: 1px solid #ddd; border-radius: 8px;
+            background: #f5f5f5; cursor: pointer; font-size: 18px;
+            display: flex; align-items: center; justify-content: center;
+            transition: background 0.15s;
+        }
+        .btn-browse:hover { background: #e3f2fd; border-color: #90caf9; }
+        .btn-browse:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* ===== 文件选择器弹窗 ===== */
+        .picker-overlay {
+            display: none; position: fixed; inset: 0; z-index: 500;
+            background: rgba(0,0,0,0.45); align-items: flex-end; justify-content: center;
+        }
+        .picker-overlay.open { display: flex; }
+        .picker-sheet {
+            background: white; border-radius: 20px 20px 0 0;
+            width: 100%; max-width: 600px; max-height: 75vh;
+            display: flex; flex-direction: column;
+            box-shadow: 0 -8px 30px rgba(0,0,0,0.2);
+            animation: slideUp 0.25s ease;
+        }
+        @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+        .picker-header {
+            padding: 14px 16px 10px; border-bottom: 1px solid #eee;
+            display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+        }
+        .picker-header button { border: none; background: none; font-size: 20px; cursor: pointer; padding: 4px; border-radius: 6px; }
+        .picker-header button:hover { background: #f0f0f0; }
+        .picker-breadcrumb { flex: 1; font-size: 0.8rem; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+        .picker-select-btn { border: none; background: #e3f2fd; color: #1565c0; border-radius: 8px; padding: 6px 12px; font-weight: bold; cursor: pointer; font-size: 0.82rem; white-space: nowrap; }
+        .picker-body { overflow-y: auto; flex: 1; }
+        .picker-entry {
+            display: flex; align-items: center; gap: 12px;
+            padding: 13px 16px; cursor: pointer; border-bottom: 1px solid #f5f5f5;
+            transition: background 0.1s;
+        }
+        .picker-entry:hover { background: #f0f7ff; }
+        .picker-entry-icon { font-size: 22px; flex-shrink: 0; width: 28px; text-align: center; }
+        .picker-entry-name { flex: 1; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .picker-entry-arrow { color: #bbb; flex-shrink: 0; }
+        .picker-empty { text-align: center; padding: 30px; color: #aaa; font-size: 0.9rem; }
+        .picker-loading { text-align: center; padding: 30px; color: #888; }
 
         /* ===== 播放记录 ===== */
         .history-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-radius: 8px; background: #f8f9fa; margin-bottom: 6px; cursor: pointer; }
@@ -475,18 +557,42 @@ WEB_UI_HTML = """
                 <span class="icon-option" onclick="selectIcon(this, '🎮')">🎮</span>
                 <span class="icon-option" onclick="selectIcon(this, '📺')">📺</span>
             </div>
-            <input type="text" id="sc-name" placeholder="起个名字">
-            <input type="text" id="sc-path" placeholder="URL 或 本地路径">
-            <button class="btn btn-small" onclick="browse('file')">📂 浏览文件</button>
-            <button class="btn btn-small" onclick="browse('folder')">📁 浏览文件夹</button>
+            <input type="text" id="sc-name" placeholder="起个名字" style="margin-bottom:10px;">
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+                <input type="text" id="sc-path" placeholder="URL 或 本地路径" style="flex:1; margin:0;">
+                <button class="btn-browse" onclick="openPicker()" title="浏览">📂</button>
+            </div>
             <button class="btn" onclick="addSC()">添加</button>
         </div>
+    </div>
+
+    <!-- 檒体根目录设置 -->
+    <div class="card settings-only" id="media-root-card">
+        <h2>🗂️ 媒体目录</h2>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <input type="text" id="media-root-input" placeholder="/path/to/media" style="flex:1; margin:0;">
+            <button class="btn" style="width:auto; margin:0; padding:10px 16px;" onclick="saveMediaRoot()">保存</button>
+        </div>
+        <small id="media-root-hint" style="color:#888; font-size:0.78rem; display:block; margin-top:6px;"></small>
     </div>
 
     <!-- 播放记录 -->
     <div class="history-panel" id="history-panel">
         <h2 style="margin-bottom:10px;">📜 播放记录 <small style="font-size:0.72rem;font-weight:normal;color:#888;margin-left:4px;">自动续播</small></h2>
         <div id="history-list"></div>
+    </div>
+
+    <!-- 文件选择器弹窗 -->
+    <div class="picker-overlay" id="picker-overlay" onclick="if(event.target===this)closePicker()">
+        <div class="picker-sheet">
+            <div class="picker-header">
+                <button onclick="pickerGoUp()" id="picker-up-btn" title="返回上级">⬆️</button>
+                <span class="picker-breadcrumb" id="picker-breadcrumb"></span>
+                <button class="picker-select-btn" id="picker-select-folder-btn" onclick="pickerSelectFolder()">选此文件夹</button>
+                <button onclick="closePicker()" title="关闭">✕</button>
+            </div>
+            <div class="picker-body" id="picker-body"></div>
+        </div>
     </div>
 
     <script>
@@ -557,7 +663,90 @@ WEB_UI_HTML = """
             if (useMode) setTimeout(adjustLayout, 50);
         }
 
-        async function browse(type) { const res = await fetch('/api/browse/' + type); const data = await res.json(); if(data.path) document.getElementById('sc-path').value = data.path; }
+        // ===== 文件选择器 =====
+        let pickerCurrentPath = '';
+        let pickerRoot = '';
+
+        async function openPicker() {
+            document.getElementById('picker-overlay').classList.add('open');
+            await navigatePicker('');
+        }
+        function closePicker() {
+            document.getElementById('picker-overlay').classList.remove('open');
+        }
+        async function navigatePicker(path) {
+            pickerCurrentPath = path;
+            document.getElementById('picker-body').innerHTML = '<div class="picker-loading">加载中…</div>';
+            try {
+                const res = await fetch('/api/files' + (path ? '?path=' + encodeURIComponent(path) : ''));
+                const data = await res.json();
+                if (data.error) { document.getElementById('picker-body').innerHTML = `<div class="picker-empty">${data.error}</div>`; return; }
+                pickerRoot = data.root;
+                // 面包屑
+                const rel = data.current.startsWith(data.root) ? data.current.slice(data.root.length) : data.current;
+                document.getElementById('picker-breadcrumb').textContent = rel || '/';
+                // 上级按钮
+                document.getElementById('picker-up-btn').disabled = !data.parent;
+                // 选文件夹按钮（总是允许选择当前目录）
+                document.getElementById('picker-select-folder-btn').style.display = '';
+                // 条目列表
+                if (!data.entries.length) {
+                    document.getElementById('picker-body').innerHTML = '<div class="picker-empty">此目录为空</div>';
+                    return;
+                }
+                document.getElementById('picker-body').innerHTML = data.entries.map(e => {
+                    const safeP = encodeURIComponent(e.path);
+                    if (e.is_dir) {
+                        return `<div class="picker-entry" onclick="navigatePicker(decodeURIComponent('${safeP}'))">
+                            <span class="picker-entry-icon">📁</span>
+                            <span class="picker-entry-name">${e.name}</span>
+                            <span class="picker-entry-arrow">›</span>
+                        </div>`;
+                    } else {
+                        return `<div class="picker-entry" onclick="pickerSelectFile('${safeP}','${encodeURIComponent(e.name)}')">
+                            <span class="picker-entry-icon">🎬</span>
+                            <span class="picker-entry-name">${e.name}</span>
+                            <span class="picker-entry-arrow" style="color:#2196F3;font-size:0.8rem;">选择</span>
+                        </div>`;
+                    }
+                }).join('');
+                // 重定向路径存储到真实路径
+                pickerCurrentPath = data.current;
+            } catch(err) {
+                document.getElementById('picker-body').innerHTML = `<div class="picker-empty">加载失败: ${err.message}</div>`;
+            }
+        }
+        async function pickerGoUp() {
+            const res = await fetch('/api/files' + (pickerCurrentPath ? '?path=' + encodeURIComponent(pickerCurrentPath) : ''));
+            const data = await res.json();
+            if (data.parent) await navigatePicker(data.parent);
+        }
+        function pickerSelectFile(safeP, safeName) {
+            const path = decodeURIComponent(safeP);
+            const name = decodeURIComponent(safeName);
+            document.getElementById('sc-path').value = path;
+            const nameEl = document.getElementById('sc-name');
+            if (!nameEl.value) nameEl.value = name.replace(/\\.[^.]+$/, '');
+            closePicker();
+        }
+        function pickerSelectFolder() {
+            document.getElementById('sc-path').value = pickerCurrentPath;
+            const nameEl = document.getElementById('sc-name');
+            if (!nameEl.value) nameEl.value = pickerCurrentPath.split('/').filter(Boolean).pop() || '';
+            closePicker();
+        }
+
+        // ===== 媒体目录设置 =====
+        async function saveMediaRoot() {
+            const val = document.getElementById('media-root-input').value.trim();
+            if (!val) return;
+            const res = await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({media_root: val}) });
+            const data = await res.json();
+            const hint = document.getElementById('media-root-hint');
+            if (data.status === 'ok') { hint.style.color='#388e3c'; hint.textContent='✅ 已保存: ' + val; }
+            else { hint.style.color='#d32f2f'; hint.textContent='❌ ' + (data.msg||'失败'); }
+        }
+
         async function castShortcut(el) {
             const path = decodeURIComponent(el.dataset.path);
             const name = decodeURIComponent(el.dataset.name);
@@ -578,7 +767,7 @@ WEB_UI_HTML = """
 def main():
     threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False), daemon=True).start()
     threading.Thread(target=scan_devices_loop, daemon=True).start()
-    threading.Thread(target=position_polling_loop, daemon=True).start() # 启动进度轮询
+    threading.Thread(target=position_polling_loop, daemon=True).start()
     root = tk.Tk(); root.title("Dollop Cast Server"); root.geometry("300x150")
     tk.Label(root, text="影音控制中心已启动", font=("Arial", 10, "bold")).pack(pady=10)
     tk.Label(root, text=f"管理地址: http://{LOCAL_IP}:5000").pack()
