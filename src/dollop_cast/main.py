@@ -1,5 +1,4 @@
 import os
-import sys
 import threading
 import time
 import socket
@@ -9,7 +8,7 @@ import json
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse, quote
 from collections import OrderedDict
-from flask import Flask, request, jsonify, send_from_directory, send_file, render_template_string
+from flask import Flask, request, jsonify, send_file, render_template_string
 from flask_cors import CORS
 from .stream_proxy import proxy_bp
 

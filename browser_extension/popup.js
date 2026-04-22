@@ -66,7 +66,7 @@ document.addEventListener('DOMContentLoaded', function () {
         allBtns.forEach(b => b.disabled = true);
         document.body.style.opacity = "0.7";
 
-        fetch('http://127.0.0.1:5000/cast', {
+        fetch('http://127.0.0.1:5000/api/cast', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url: url })

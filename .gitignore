@@ -26,3 +26,5 @@ venv.bak/
 *.jpg
 *.mp4
 proxy (4)
+dist/
+data/
