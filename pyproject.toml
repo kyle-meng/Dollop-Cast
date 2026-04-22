@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dollop-cast"
-version = "0.1.0"
+version = "0.1.1"
 description = "A powerful, headless, web-first DLNA media control center and local player."
 readme = "README.md"
 requires-python = ">=3.8"

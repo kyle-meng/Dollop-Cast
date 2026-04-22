@@ -4,16 +4,17 @@
   
   [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
   [![License](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE)
+  [![GitHub Repo](https://img.shields.io/badge/GitHub-Repository-black.svg?logo=github)](https://github.com/kyle-meng/Dollop-Cast)
 </div>
 
 <hr/>
 
 ## 📸 界面展示
 
-|<img src="img/使用模式界面.png" width="400" />|<img src="img/设置模式-设备选择-系统设置.png" width="400" />|
+|<img src="https://raw.githubusercontent.com/kyle-meng/Dollop-Cast/main/img/使用模式界面.png" width="400" />|<img src="https://raw.githubusercontent.com/kyle-meng/Dollop-Cast/main/img/设置模式-设备选择-系统设置.png" width="400" />|
 |:---:|:---:|
 |**使用模式：纯 Web 操控与追剧进度记忆**|**设置模式：设备扫描与连播全局设置**|
-|<img src="img/设置模式-媒体目录.png" width="400" />|<img src="img/设置模式-添加快捷设置.png" width="400" />|
+|<img src="https://raw.githubusercontent.com/kyle-meng/Dollop-Cast/main/img/设置模式-媒体目录.png" width="400" />|<img src="https://raw.githubusercontent.com/kyle-meng/Dollop-Cast/main/img/设置模式-添加快捷设置.png" width="400" />|
 |**沙盒媒体资源网：直读本地及 WebDAV 挂载库**|**捷径控制中心：跨源流媒体即点即播**|
 
 ---
@@ -47,13 +48,13 @@
 
 确保您的系统已安装 [Python 3.8+](https://www.python.org/)。建议使用虚拟环境（venv）。
 
-进入项目根目录后，执行标准打包安装命令：
+您可以通过 PyPI 直接安装该项目：
 
 ```bash
-pip install -e .
+pip install dollop-cast
 ```
 
-*此命令将自动下载内部依赖（flask, waitress, requests, flask-cors 等）并绑定环境变量快捷运行脚本。*
+*此命令将自动下载所有依赖并注册 `dollop-cast` 全局执行命令。*
 
 ---
 
